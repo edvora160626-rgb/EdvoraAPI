@@ -11,6 +11,7 @@ const generateSchoolCode = () => {
         Math.random().toString(36).substring(2, 8).toUpperCase()
     );
 };
+
 const register = async (req, res) => {
     try {
         console.log("HERE")
@@ -68,7 +69,7 @@ const register = async (req, res) => {
             lastName,
             email,
             phone,
-            phoneCode:phonecode,
+            phoneCode: phonecode,
             password: hashedPassword,
             admissionNumber,
             rollNumber,
@@ -221,7 +222,7 @@ const login = async (req, res) => {
             });
         }
 
-        generateToken(user)
+        let token = generateToken(user)
 
 
         res.cookie(`token_${user.role}_${user._id}`, token, {
