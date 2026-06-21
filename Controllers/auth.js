@@ -11,10 +11,8 @@ const generateSchoolCode = () => {
         Math.random().toString(36).substring(2, 8).toUpperCase()
     );
 };
-
 const register = async (req, res) => {
     try {
-        console.log("HERE")
         const {
             schoolId,
             role,
@@ -98,7 +96,6 @@ const register = async (req, res) => {
         });
     }
 };
-
 const registerSchool = async (req, res) => {
     try {
         const {
@@ -175,7 +172,6 @@ const registerSchool = async (req, res) => {
         });
     }
 };
-
 const login = async (req, res) => {
     try {
         const { emailid, password } = req.body;
@@ -251,7 +247,105 @@ const login = async (req, res) => {
             message: "Internal Server Error",
             error: process.env.NODE_ENV === "development"
                 ? error.message
-                : undefined,
+                : "Something went wrong",
+        });
+    }
+};
+const pendingRequests = async (req, res) => {
+    try {
+        const { schoolId, role } = req.body;
+
+        if (!schoolId || !role) {
+            return res.status(400).json({
+                success: false,
+                message: "schoolId and role are required"
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId"
+            });
+        }
+
+        const pendingRequests = await User.find({
+            schoolId,
+            role,
+            status: "REQUESTED"
+        }).select("-password");
+
+        return res.status(200).json({
+            success: true,
+            count: pendingRequests.length,
+            data: pendingRequests
+        });
+
+    } catch (error) {
+        console.error("Pending Requests Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: process.env.NODE_ENV === "development"
+                ? error.message
+                : "Something went wrong",
+        });
+    }
+};
+const acceptOrRejectRequest = async (req, res) => {
+    try {
+        const { userId, status } = req.body;
+
+        if (!userId || !status) {
+            return res.status(400).json({
+                success: false,
+                message: "userId and status are required"
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid userId"
+            });
+        }
+
+        if (!["APPROVED", "REJECTED"].includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: "Status must be APPROVED or REJECTED"
+            });
+        }
+
+        const user = await User.findByIdAndUpdate(
+            userId,
+            { status },
+            { new: true }
+        ).select("-password");
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `Request ${status.toLowerCase()} successfully`,
+            data: user
+        });
+
+    } catch (error) {
+        console.error("Accept/Reject Request Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: process.env.NODE_ENV === "development"
+                ? error.message
+                : "Something went wrong",
         });
     }
 };
@@ -259,5 +353,9 @@ const login = async (req, res) => {
 module.exports = {
     register,
     login,
-    registerSchool
+    registerSchool,
+    acceptOrRejectRequest,
+    pendingRequests
+
+
 };
