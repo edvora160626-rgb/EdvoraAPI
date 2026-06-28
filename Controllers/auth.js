@@ -2,6 +2,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const School = require("../models/School");
+const mongoose = require("mongoose");
+
 const generateToken = require("../utils/generateJwt");
 
 const generateSchoolCode = () => {
@@ -10,6 +12,7 @@ const generateSchoolCode = () => {
         Math.random().toString(36).substring(2, 8).toUpperCase()
     );
 };
+
 const register = async (req, res) => {
     try {
         const {
@@ -22,72 +25,126 @@ const register = async (req, res) => {
             phone,
             password,
 
+            // Student
             admissionNumber,
             rollNumber,
             grade,
             section,
 
+            // Teacher
             employeeId,
             department,
             qualification,
             subjects,
 
+            // Parent
             relationship,
             children
         } = req.body;
 
-        if (!role || !firstName || !email || !phone || !phonecode || !password) {
+        if (
+            !role ||
+            !firstName ||
+            !lastName ||
+            !email ||
+            !phone ||
+            !phonecode ||
+            !password
+        ) {
             return res.status(400).json({
                 success: false,
-                message: "Required fields missing"
+                message: "Required fields are missing."
             });
         }
+
+        const allowedRoles = [
+            "SCHOOL_ADMIN",
+            "TEACHER",
+            "STUDENT",
+            "PARENT"
+        ];
+
+        if (!allowedRoles.includes(role)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role."
+            });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must contain at least 8 characters."
+            });
+        }
+
+
+        switch (role) {
+
+            case "STUDENT":
+
+                if (!admissionNumber || !grade || !rollNumber || !section) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Admission Number, Roll Number, Grade and Section are required."
+                    });
+                }
+
+                break;
+
+            case "TEACHER":
+
+                if (!employeeId || !department || !qualification) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Employee ID, Department and Qualification are required."
+                    });
+                }
+
+                break;
+
+            case "PARENT":
+
+                if (
+                    !relationship ||
+                    !Array.isArray(children) ||
+                    children.length === 0
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Relationship and Children are required."
+                    });
+                }
+
+                break;
+
+            case "SCHOOL_ADMIN":
+                break;
+        }
+
 
         const existingUser = await User.findOne({
             $or: [
                 { email },
-                { phone }
+                {
+                    phone,
+                    phoneCode: phonecode
+                }
             ]
-        });
+        }).lean();
 
         if (existingUser) {
-            return res.status(400).json({
+            return res.status(409).json({
                 success: false,
-                message: "User already exists"
+                message: "User already exists."
             });
         }
 
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        if (role === "STUDENT") {
-            if (!admissionNumber || !grade) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Please provide admission number and grade"
-                });
-            }
-        }
 
-        if (role === "TEACHER") {
-            if (!employeeId || !department || !qualification) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Please provide employeeId,department and qualification"
-                });
-            }
-
-        }
-
-        if (role === "PARENT") {
-            if (!employeeId || !department || !qualification) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Please provide employeeId,department and qualification"
-                });
-            }
-
-        }
-        const user = await User.create({
+        const userData = {
             schoolId,
             role,
             firstName,
@@ -95,31 +152,56 @@ const register = async (req, res) => {
             email,
             phone,
             phoneCode: phonecode,
-            password: hashedPassword,
-            admissionNumber,
-            rollNumber,
-            grade,
-            section,
-            employeeId,
-            department,
-            qualification,
-            subjects,
-            relationship,
-            children
-        });
+            password: hashedPassword
+        };
 
-        res.status(200).json({
+        if (role === "STUDENT") {
+            Object.assign(userData, {
+                admissionNumber,
+                rollNumber,
+                grade,
+                section
+            });
+        }
+
+        if (role === "TEACHER") {
+            Object.assign(userData, {
+                employeeId,
+                department,
+                qualification,
+                subjects
+            });
+        }
+
+        if (role === "PARENT") {
+            Object.assign(userData, {
+                relationship,
+                children
+            });
+        }
+
+
+        const user = await User.create(userData);
+
+        const response = user.toObject();
+        delete response.password;
+
+        return res.status(201).json({
             success: true,
-            message: `${role} registered successfully`,
-            data: user
+            message: `${role} registered successfully.`,
+            data: response
         });
 
     } catch (error) {
-        console.log(error);
+        console.error("Register Error:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
-            message: error.message
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : undefined
         });
     }
 };
@@ -355,7 +437,7 @@ const acceptOrRejectRequest = async (req, res) => {
             });
         }
 
-        if (!["APPROVED", "REJECTED"].includes(status)) {
+        if (!["ACTIVE", "ACTIVE"].includes(status)) {
             return res.status(400).json({
                 success: false,
                 message: "Status must be APPROVED or REJECTED"
@@ -601,19 +683,6 @@ const setNewPassword = async (req, res) => {
             });
         }
 
-        if (!user.isVerified) {
-            return res.status(400).json({
-                success: false,
-                message: "Email is not verified."
-            });
-        }
-
-        if (user.password) {
-            return res.status(400).json({
-                success: false,
-                message: "Password has already been set."
-            });
-        }
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -657,12 +726,6 @@ const forgotPassword = async (req, res) => {
             });
         }
 
-        if (!user.isVerified) {
-            return res.status(400).json({
-                success: false,
-                message: "Email is not verified."
-            });
-        }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
