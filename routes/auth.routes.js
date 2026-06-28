@@ -8,14 +8,9 @@ router.post("/register",register);
 router.post("/login",login);
 router.post("/pendingRequests",pendingRequests);
 router.post("/acceptOrRejectRequest",acceptOrRejectRequest);
-
 router.post("/createStudentTeacherParentSchoolAdmin",createStudentTeacherParentSchoolAdmin);
 router.post("/setNewPassword",setNewPassword);
 router.post("/forgotPassword",forgotPassword);
 router.post("/verifyForgotOtp",verifyForgotOtp);
-
-
-
-
 
 module.exports = router;
