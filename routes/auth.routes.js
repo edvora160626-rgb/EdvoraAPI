@@ -1,5 +1,5 @@
 const express = require("express");
-const { registerSchool, login, register, pendingRequests, acceptOrRejectRequest } = require("../Controllers/auth");
+const { registerSchool, login, register, pendingRequests, acceptOrRejectRequest, verifyForgotOtp, forgotPassword, setNewPassword, createStudentTeacherParentSchoolAdmin } = require("../Controllers/auth");
 const router = express.Router();
 
 
@@ -8,6 +8,12 @@ router.post("/register",register);
 router.post("/login",login);
 router.post("/pendingRequests",pendingRequests);
 router.post("/acceptOrRejectRequest",acceptOrRejectRequest);
+
+router.post("/createStudentTeacherParentSchoolAdmin",createStudentTeacherParentSchoolAdmin);
+router.post("/setNewPassword",setNewPassword);
+router.post("/forgotPassword",forgotPassword);
+router.post("/verifyForgotOtp",verifyForgotOtp);
+
 
 
 

@@ -104,6 +104,14 @@ const userSchema = new mongoose.Schema(
         qualification: String,
         experience: Number,
         subjects: [String],
+        welcomeOTP:String,
+        mustChangePassword:{
+            type:Number,
+            required:true,
+            default:0
+        },
+        forgotOtp:String
+
     },
     {
         timestamps: true,
