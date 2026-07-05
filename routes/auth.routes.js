@@ -1,5 +1,5 @@
 const express = require("express");
-const { registerSchool, login, register, pendingRequests, acceptOrRejectRequest, verifyForgotOtp, forgotPassword, setNewPassword, createStudentTeacherParentSchoolAdmin } = require("../Controllers/auth");
+const { registerSchool, login, register, pendingRequests, acceptOrRejectRequest, verifyForgotOtp, forgotPassword, setNewPassword, createStudentTeacherParentSchoolAdmin, getAllSchools } = require("../Controllers/auth");
 const router = express.Router();
 
 
@@ -12,5 +12,7 @@ router.post("/createStudentTeacherParentSchoolAdmin",createStudentTeacherParentS
 router.post("/setNewPassword",setNewPassword);
 router.post("/forgotPassword",forgotPassword);
 router.post("/verifyForgotOtp",verifyForgotOtp);
+router.get("/getAllSchools",getAllSchools);
+
 
 module.exports = router;

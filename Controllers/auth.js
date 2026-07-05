@@ -823,7 +823,31 @@ const verifyForgotOtp = async (req, res) => {
         });
     }
 };
+const getAllSchools = async (req, res) => {
+    try {
+        const allSchools = await School.find({})
+            .select("schoolName _id");
+
+        return res.status(200).json({
+            success: true,
+            message: "Schools fetched successfully",
+            data: allSchools,
+        });
+    } catch (error) {
+        console.error("getAllSchools Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
 module.exports = {
+    getAllSchools,
     register,
     login,
     registerSchool,
