@@ -1,10 +1,9 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
-const School = require("../models/School");
 const mongoose = require("mongoose");
-
+const School = require("../models/School");
 const generateToken = require("../utils/generateJwt");
+const { getModelByRole, findUserAcrossModels } = require("../utils/roleModelMap");
 
 const generateSchoolCode = () => {
     return (
@@ -78,33 +77,26 @@ const register = async (req, res) => {
             });
         }
 
-
         switch (role) {
-
             case "STUDENT":
-
                 if (!admissionNumber || !grade || !rollNumber || !section) {
                     return res.status(400).json({
                         success: false,
                         message: "Admission Number, Roll Number, Grade and Section are required."
                     });
                 }
-
                 break;
 
             case "TEACHER":
-
                 if (!employeeId || !department || !qualification) {
                     return res.status(400).json({
                         success: false,
                         message: "Employee ID, Department and Qualification are required."
                     });
                 }
-
                 break;
 
             case "PARENT":
-
                 if (
                     !relationship ||
                     !Array.isArray(children) ||
@@ -115,15 +107,16 @@ const register = async (req, res) => {
                         message: "Relationship and Children are required."
                     });
                 }
-
                 break;
 
             case "SCHOOL_ADMIN":
                 break;
         }
 
+        // Resolve the correct model for this role
+        const Model = getModelByRole(role);
 
-        const existingUser = await User.findOne({
+        const existingUser = await Model.findOne({
             $or: [
                 { email },
                 {
@@ -140,9 +133,7 @@ const register = async (req, res) => {
             });
         }
 
-
         const hashedPassword = await bcrypt.hash(password, 10);
-
 
         const userData = {
             schoolId,
@@ -180,8 +171,7 @@ const register = async (req, res) => {
             });
         }
 
-
-        const user = await User.create(userData);
+        const user = await Model.create(userData);
 
         const response = user.toObject();
         delete response.password;
@@ -205,6 +195,7 @@ const register = async (req, res) => {
         });
     }
 };
+
 const registerSchool = async (req, res) => {
     try {
         const {
@@ -220,7 +211,6 @@ const registerSchool = async (req, res) => {
             principalName,
         } = req.body;
 
-        // Check duplicate email/phone
         const existingSchool = await School.exists({
             $or: [{ email }, { phone }],
         });
@@ -253,7 +243,6 @@ const registerSchool = async (req, res) => {
 
                 break;
             } catch (err) {
-                // Duplicate schoolCode generated
                 if (err.code === 11000 && err.keyPattern?.schoolCode) {
                     retry++;
                     continue;
@@ -281,11 +270,11 @@ const registerSchool = async (req, res) => {
         });
     }
 };
+
 const login = async (req, res) => {
     try {
         const { emailid, password } = req.body;
 
-        // Validate request
         if (!emailid || !password) {
             return res.status(400).json({
                 success: false,
@@ -293,20 +282,20 @@ const login = async (req, res) => {
             });
         }
 
-        // Find user
-        const user = await User.findOne({
+        // Role is unknown at login time — search across all collections
+        const result = await findUserAcrossModels({
             email: emailid.trim().toLowerCase(),
         });
 
-        // User not found
-        if (!user) {
+        if (!result) {
             return res.status(404).json({
                 success: false,
                 message: "User not found",
             });
         }
 
-        // Check account status
+        const { user } = result;
+
         if (user.status !== "ACTIVE") {
             return res.status(403).json({
                 success: false,
@@ -314,7 +303,7 @@ const login = async (req, res) => {
             });
         }
 
-        if (user.mustChangePassword && user?.mustChangePassword === 1) {
+        if (user.mustChangePassword && user.mustChangePassword === 1) {
             const isWelcomePasswordValid = password;
             if (!isWelcomePasswordValid) {
                 return res.status(401).json({
@@ -326,12 +315,9 @@ const login = async (req, res) => {
                 success: true,
                 message: "Verified successful",
                 isFirstLogin: "Y"
-            })
+            });
         }
 
-
-
-        // Verify password
         const isPasswordValid = await bcrypt.compare(
             password,
             user.password
@@ -344,8 +330,7 @@ const login = async (req, res) => {
             });
         }
 
-        let token = generateToken(user)
-
+        const token = generateToken(user);
 
         res.cookie(`token_${user.role}_${user._id}`, token, {
             httpOnly: true,
@@ -354,8 +339,6 @@ const login = async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
-
-        // Remove sensitive data
         const userData = user.toObject();
         delete userData.password;
 
@@ -377,6 +360,7 @@ const login = async (req, res) => {
         });
     }
 };
+
 const pendingRequests = async (req, res) => {
     try {
         const { schoolId, role } = req.body;
@@ -395,16 +379,24 @@ const pendingRequests = async (req, res) => {
             });
         }
 
-        const pendingRequests = await User.find({
+        const Model = getModelByRole(role);
+
+        if (!Model) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role"
+            });
+        }
+
+        const pendingList = await Model.find({
             schoolId,
-            role,
             status: "REQUESTED"
         }).select("-password");
 
         return res.status(200).json({
             success: true,
-            count: pendingRequests.length,
-            data: pendingRequests
+            count: pendingList.length,
+            data: pendingList
         });
 
     } catch (error) {
@@ -419,14 +411,15 @@ const pendingRequests = async (req, res) => {
         });
     }
 };
+
 const acceptOrRejectRequest = async (req, res) => {
     try {
-        const { userId, status } = req.body;
+        const { userId, status, role } = req.body;
 
-        if (!userId || !status) {
+        if (!userId || !status || !role) {
             return res.status(400).json({
                 success: false,
-                message: "userId and status are required"
+                message: "userId, role and status are required"
             });
         }
 
@@ -437,14 +430,23 @@ const acceptOrRejectRequest = async (req, res) => {
             });
         }
 
-        if (!["ACTIVE", "ACTIVE"].includes(status)) {
+        if (!["ACTIVE", "INACTIVE"].includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: "Status must be APPROVED or REJECTED"
+                message: "Status must be ACTIVE or INACTIVE"
             });
         }
 
-        const user = await User.findByIdAndUpdate(
+        const Model = getModelByRole(role);
+
+        if (!Model) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role"
+            });
+        }
+
+        const user = await Model.findByIdAndUpdate(
             userId,
             { status },
             { new: true }
@@ -505,7 +507,6 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             children
         } = req.body;
 
-        // Basic Validation
         if (
             !schoolId ||
             !role ||
@@ -513,7 +514,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             !lastName ||
             !email ||
             !phonecode ||
-            !phone || !gender
+            !phone ||
+            !gender
         ) {
             return res.status(400).json({
                 success: false,
@@ -521,7 +523,6 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             });
         }
 
-        // Role Specific Validation
         switch (role) {
             case "STUDENT":
                 if (!admissionNumber || !rollNumber || !grade || !section) {
@@ -560,8 +561,16 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 });
         }
 
-        // Check duplicate Email/Phone
-        const existingUser = await User.findOne({
+        const Model = getModelByRole(role);
+
+        if (!Model) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role."
+            });
+        }
+
+        const existingUser = await Model.findOne({
             $or: [
                 { email },
                 {
@@ -578,11 +587,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             });
         }
 
-        // Generate OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-
-        // Prepare User Data
         const userData = {
             schoolId,
             role,
@@ -591,17 +597,14 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             email,
             phone,
             phoneCode: phonecode,
-
             password: null,
             isVerified: false,
-
             welcomeOTP: otp,
             mustChangePassword: 1,
             status: "ACTIVE",
             gender
         };
 
-        // Student Fields
         if (role === "STUDENT") {
             userData.admissionNumber = admissionNumber;
             userData.rollNumber = rollNumber;
@@ -609,7 +612,6 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             userData.section = section;
         }
 
-        // Teacher Fields
         if (role === "TEACHER") {
             userData.employeeId = employeeId;
             userData.department = department;
@@ -617,21 +619,14 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             userData.subjects = subjects;
         }
 
-        // Parent Fields
         if (role === "PARENT") {
             userData.relationship = relationship;
             userData.children = children;
         }
 
-        // Create User
-        const user = await User.create(userData);
+        const user = await Model.create(userData);
 
-        // Send OTP Email
-        // await sendOTPEmail(
-        //     user.email,
-        //     user.firstName,
-        //     otp
-        // );
+        // await sendOTPEmail(user.email, user.firstName, otp);
 
         return res.status(201).json({
             success: true,
@@ -656,14 +651,15 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
         });
     }
 };
+
 const setNewPassword = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, role } = req.body;
 
-        if (!email || !password) {
+        if (!email || !password || !role) {
             return res.status(400).json({
                 success: false,
-                message: "Email and password are required."
+                message: "Email, role and password are required."
             });
         }
 
@@ -674,7 +670,16 @@ const setNewPassword = async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ email });
+        const Model = getModelByRole(role);
+
+        if (!Model) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role."
+            });
+        }
+
+        const user = await Model.findOne({ email });
 
         if (!user) {
             return res.status(404).json({
@@ -682,7 +687,6 @@ const setNewPassword = async (req, res) => {
                 message: "User not found."
             });
         }
-
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -706,6 +710,7 @@ const setNewPassword = async (req, res) => {
         });
     }
 };
+
 const forgotPassword = async (req, res) => {
     try {
         const { email } = req.body;
@@ -717,28 +722,24 @@ const forgotPassword = async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ email });
+        // Role unknown — search across all collections
+        const result = await findUserAcrossModels({ email });
 
-        if (!user) {
+        if (!result) {
             return res.status(404).json({
                 success: false,
                 message: "User not found."
             });
         }
 
+        const { user } = result;
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
         user.forgotOtp = otp;
-        // user.forgotOtpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-
         await user.save();
 
-        // await sendOTPEmail(
-        //     user.email,
-        //     user.firstName,
-        //     otp
-        // );
+        // await sendOTPEmail(user.email, user.firstName, otp);
 
         return res.status(200).json({
             success: true,
@@ -758,6 +759,7 @@ const forgotPassword = async (req, res) => {
         });
     }
 };
+
 const verifyForgotOtp = async (req, res) => {
     try {
         const { email, otp } = req.body;
@@ -769,18 +771,19 @@ const verifyForgotOtp = async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ email });
+        // Role unknown — search across all collections
+        const result = await findUserAcrossModels({ email });
 
-        if (!user) {
+        if (!result) {
             return res.status(404).json({
                 success: false,
                 message: "User not found."
             });
         }
 
-        if (
-            !user.forgotOtp
-        ) {
+        const { user } = result;
+
+        if (!user.forgotOtp) {
             return res.status(400).json({
                 success: false,
                 message: "No OTP found. Please request a new OTP."
@@ -802,7 +805,6 @@ const verifyForgotOtp = async (req, res) => {
         }
 
         user.forgotOtp = null;
-
         await user.save();
 
         return res.status(200).json({
@@ -823,6 +825,7 @@ const verifyForgotOtp = async (req, res) => {
         });
     }
 };
+
 const getAllSchools = async (req, res) => {
     try {
         const allSchools = await School.find({})
@@ -846,6 +849,7 @@ const getAllSchools = async (req, res) => {
         });
     }
 };
+
 module.exports = {
     getAllSchools,
     register,
@@ -855,9 +859,6 @@ module.exports = {
     pendingRequests,
     setNewPassword,
     createStudentTeacherParentSchoolAdmin,
-    acceptOrRejectRequest,
     verifyForgotOtp,
     forgotPassword
-
-
 };
