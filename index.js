@@ -17,9 +17,13 @@ app.get("/", (req, res) => {
     });
 });
 const schoolRoutes = require("./routes/auth.routes");
+const departmentRoutes = require("./routes/department.routes");
+
 
 
 app.use("/auth", schoolRoutes);
+app.use("/department", departmentRoutes);
+
 
 // Database Connection
 mongoose

@@ -55,8 +55,10 @@ const register = async (req, res) => {
                 message: "Required fields are missing."
             });
         }
+        console.log("HERE1")
 
         const allowedRoles = [
+            "SUPER_ADMIN",
             "SCHOOL_ADMIN",
             "TEACHER",
             "STUDENT",
@@ -110,6 +112,8 @@ const register = async (req, res) => {
                 break;
 
             case "SCHOOL_ADMIN":
+                break;
+            case "SUPER_ADMIN":
                 break;
         }
 
@@ -552,6 +556,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 break;
 
             case "SCHOOL_ADMIN":
+                break;
+            case "SUPER_ADMIN":
                 break;
 
             default:
