@@ -86,6 +86,10 @@ const departmentSchema = new mongoose.Schema(
       ref: "SchoolAdmin",
       required: true,
     },
+    teacherids:[{
+      type: mongoose.Schema.Types.ObjectId,
+      ref:"Teacher"
+    }]
   },
   {
     timestamps: true, // Automatically creates createdAt & updatedAt
