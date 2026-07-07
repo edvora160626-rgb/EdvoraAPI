@@ -214,6 +214,47 @@ const teachersToDepartment = async (req, res) => {
     }
 }
 
+const totalActiveTeachers = async (req, res) => {
+    try {
+        const { schoolId } = req.body;
+
+        if (!schoolId) {
+            return res.status(400).json({
+                success: false,
+                message: "schoolId is required.",
+            });
+        }
+
+        const teachers = await Teacher.find({
+            schoolId,
+            role: "TEACHER",
+            status: "ACTIVE",
+        })
+        .select("-password -__v") // Select only required fields
+        .lean();                  // Returns plain JS objects (faster)
+
+        return res.status(200).json({
+            success: true,
+            message: "Active teachers fetched successfully.",
+            totalTeachers: teachers.length,
+            data: teachers,
+        });
+
+    } catch (error) {
+        console.error("totalActiveTeachers Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+
 module.exports = {
     createDepartment,
     teachersToDepartment

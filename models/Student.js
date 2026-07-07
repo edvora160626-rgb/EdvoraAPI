@@ -20,7 +20,8 @@ const studentSchema = new mongoose.Schema(
         },
 
         grade: {
-            type: String,
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Class"
         },
 
         section: {
