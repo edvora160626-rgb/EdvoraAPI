@@ -72,9 +72,8 @@ const addClasses = async (req, res) => {
 
 const getActiveClassesBySchool = async (req, res) => {
     try {
-        const { schoolId } = req.body;
+        const { schoolId, flag } = req.body;
 
-        // Validate required fields
         if (!schoolId) {
             return res.status(400).json({
                 success: false,
@@ -82,12 +81,27 @@ const getActiveClassesBySchool = async (req, res) => {
             });
         }
 
+        // Return only count
+        if (flag === "COUNT") {
+            const classesCount = await ClassesModel.countDocuments({
+                schoolId,
+                status: "ACTIVE",
+            });
+
+            return res.status(200).json({
+                success: true,
+                classesCount,
+            });
+        }
+
+        // Return only class list
         const classes = await ClassesModel.find({
             schoolId,
             status: "ACTIVE",
         })
-        .sort({ className: 1, section: 1 })
-        .lean();
+            .select("className section classTeacherId strength status")
+            .sort({ className: 1, section: 1 })
+            .lean();
 
         return res.status(200).json({
             success: true,
@@ -109,6 +123,8 @@ const getActiveClassesBySchool = async (req, res) => {
         });
     }
 };
+
+
 
 
 
