@@ -3,7 +3,7 @@ const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const School = require("../models/School");
 const generateToken = require("../utils/generateJwt");
-const { getModelByRole, findUserAcrossModels } = require("../utils/roleModelMap");
+const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
 
 const generateSchoolCode = () => {
     return (
@@ -369,10 +369,10 @@ const pendingRequests = async (req, res) => {
     try {
         const { schoolId, role } = req.body;
 
-        if (!schoolId || !role) {
+        if (!schoolId) {
             return res.status(400).json({
                 success: false,
-                message: "schoolId and role are required"
+                message: "schoolId is required"
             });
         }
 
@@ -380,6 +380,19 @@ const pendingRequests = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: "Invalid schoolId"
+            });
+        }
+
+        if (!role) {
+            const counts = {}
+            for (const [roleName, Model] of Object.entries(roleModelMap)) {
+                counts[roleName] = await Model.countDocuments({ schoolId, status: "REQUESTED" })
+
+            }
+
+            return res.json({
+                success: true,
+                counts
             });
         }
 
