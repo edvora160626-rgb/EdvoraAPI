@@ -12,7 +12,8 @@ app.use(
     origin: [
       "http://localhost:5173",
       "https://edvora-eront.vercel.app",
-      "https://edvora-eront-gm2kegov3-edvora2.vercel.app"
+      "https://edvora-eront-gm2kegov3-edvora2.vercel.app",
+      "https://edvora-eront-ke8e53793-edvora2.vercel.app"
     ],
     credentials: true,
   })
