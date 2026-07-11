@@ -72,7 +72,9 @@ const addClasses = async (req, res) => {
 
 const getActiveClassesBySchool = async (req, res) => {
     try {
-        const { schoolId, flag } = req.body;
+        const { schoolId, flag, status } = req.body;
+        const allowedStatuses = ["ACTIVE", "INACTIVE"];
+        const filterStatus = allowedStatuses.includes(status) ? status : "ACTIVE";
 
         if (!schoolId) {
             return res.status(400).json({
@@ -81,32 +83,40 @@ const getActiveClassesBySchool = async (req, res) => {
             });
         }
 
-        // Return only count
-        if (flag === "COUNT") {
-            const classesCount = await ClassesModel.countDocuments({
-                schoolId,
-                status: "ACTIVE",
-            });
+        const [activeCount, inactiveCount] = await Promise.all([
+            ClassesModel.countDocuments({ schoolId, status: "ACTIVE" }),
+            ClassesModel.countDocuments({ schoolId, status: "INACTIVE" }),
+        ]);
 
+        const counts = {
+            ACTIVE: activeCount,
+            INACTIVE: inactiveCount,
+        };
+        const totalClasses = activeCount + inactiveCount;
+
+        if (flag === "COUNT") {
             return res.status(200).json({
                 success: true,
-                classesCount,
+                totalClasses,
+                counts,
+                classesCount: activeCount,
             });
         }
 
-        // Return only class list
         const classes = await ClassesModel.find({
             schoolId,
-            status: "ACTIVE",
+            status: filterStatus,
         })
-            .select("className section classTeacherId strength status")
+            .select("_id className section classTeacherId strength status")
             .sort({ className: 1, section: 1 })
             .lean();
 
         return res.status(200).json({
             success: true,
-            message: "Active classes fetched successfully.",
-            totalClasses: classes.length,
+            message: `${filterStatus === "ACTIVE" ? "Active" : "Inactive"} classes fetched successfully.`,
+            totalClasses,
+            counts,
+            status: filterStatus,
             data: classes,
         });
 

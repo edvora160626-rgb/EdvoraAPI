@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const School = require("../models/School");
+const Student = require("../models/Student");
 const generateToken = require("../utils/generateJwt");
 const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
 
@@ -10,6 +11,53 @@ const generateSchoolCode = () => {
         "SCH" +
         Math.random().toString(36).substring(2, 8).toUpperCase()
     );
+};
+
+const resolveParentChildren = async (childrenInput, schoolId) => {
+    if (!Array.isArray(childrenInput) || childrenInput.length === 0) {
+        return { error: "Relationship and Children are required." };
+    }
+
+    if (!schoolId) {
+        return { error: "School is required to link children." };
+    }
+
+    const resolvedIds = [];
+
+    for (const entry of childrenInput) {
+        const value = String(entry || "").trim();
+        if (!value) continue;
+
+        let student = null;
+
+        if (mongoose.Types.ObjectId.isValid(value) && String(new mongoose.Types.ObjectId(value)) === value) {
+            student = await Student.findOne({
+                _id: value,
+                schoolId,
+            }).lean();
+        }
+
+        if (!student) {
+            student = await Student.findOne({
+                admissionNumber: value,
+                schoolId,
+            }).lean();
+        }
+
+        if (!student) {
+            return {
+                error: `Student not found for "${value}". Use a valid admission number or student ID.`,
+            };
+        }
+
+        resolvedIds.push(student._id);
+    }
+
+    if (resolvedIds.length === 0) {
+        return { error: "Relationship and Children are required." };
+    }
+
+    return { children: resolvedIds };
 };
 
 const register = async (req, res) => {
@@ -87,6 +135,12 @@ const register = async (req, res) => {
                         message: "Admission Number, Roll Number, Grade and Section are required."
                     });
                 }
+                if (!mongoose.Types.ObjectId.isValid(grade)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Grade must be a valid Class ID."
+                    });
+                }
                 break;
 
             case "TEACHER":
@@ -99,11 +153,7 @@ const register = async (req, res) => {
                 break;
 
             case "PARENT":
-                if (
-                    !relationship ||
-                    !Array.isArray(children) ||
-                    children.length === 0
-                ) {
+                if (!relationship || !Array.isArray(children) || children.length === 0) {
                     return res.status(400).json({
                         success: false,
                         message: "Relationship and Children are required."
@@ -169,9 +219,17 @@ const register = async (req, res) => {
         }
 
         if (role === "PARENT") {
+            const resolved = await resolveParentChildren(children, schoolId);
+            if (resolved.error) {
+                return res.status(400).json({
+                    success: false,
+                    message: resolved.error,
+                });
+            }
+
             Object.assign(userData, {
                 relationship,
-                children
+                children: resolved.children,
             });
         }
 
@@ -188,6 +246,34 @@ const register = async (req, res) => {
 
     } catch (error) {
         console.error("Register Error:", error);
+
+        if (error?.code === 11000) {
+            const field = Object.keys(error.keyPattern || {})[0] || "field";
+            return res.status(409).json({
+                success: false,
+                message: `${field} already exists.`,
+            });
+        }
+
+        if (error?.name === "CastError") {
+            const field = error.path || "field";
+            return res.status(400).json({
+                success: false,
+                message:
+                    field === "grade"
+                        ? "Grade must be a valid Class ID from the selected school."
+                        : field === "children"
+                          ? "Invalid children value. Use student admission numbers or valid student IDs."
+                          : `Invalid value for ${field}.`,
+            });
+        }
+
+        if (error?.name === "ValidationError") {
+            return res.status(400).json({
+                success: false,
+                message: error.message,
+            });
+        }
 
         return res.status(500).json({
             success: false,
@@ -367,7 +453,9 @@ const login = async (req, res) => {
 
 const pendingRequests = async (req, res) => {
     try {
-        const { schoolId, role } = req.body;
+        const { schoolId, role, status } = req.body;
+        const allowedStatuses = ["REQUESTED", "ACTIVE", "INACTIVE"];
+        const filterStatus = allowedStatuses.includes(status) ? status : "REQUESTED";
 
         if (!schoolId) {
             return res.status(400).json({
@@ -383,11 +471,21 @@ const pendingRequests = async (req, res) => {
             });
         }
 
+        // Initial stage (no role): return counts for all statuses per role
         if (!role) {
-            const counts = {}
+            const counts = {};
             for (const [roleName, Model] of Object.entries(roleModelMap)) {
-                counts[roleName] = await Model.countDocuments({ schoolId, status: "REQUESTED" })
+                const [requested, active, inactive] = await Promise.all([
+                    Model.countDocuments({ schoolId, status: "REQUESTED" }),
+                    Model.countDocuments({ schoolId, status: "ACTIVE" }),
+                    Model.countDocuments({ schoolId, status: "INACTIVE" }),
+                ]);
 
+                counts[roleName] = {
+                    REQUESTED: requested,
+                    ACTIVE: active,
+                    INACTIVE: inactive,
+                };
             }
 
             return res.json({
@@ -405,9 +503,10 @@ const pendingRequests = async (req, res) => {
             });
         }
 
+        // Role-based: return users filtered by status
         const pendingList = await Model.find({
             schoolId,
-            status: "REQUESTED"
+            status: filterStatus
         }).select("-password");
 
         return res.status(200).json({

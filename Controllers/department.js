@@ -254,8 +254,80 @@ const totalActiveTeachers = async (req, res) => {
     }
 };
 
+const getActiveDepartmentsBySchool = async (req, res) => {
+    try {
+        const { schoolId, flag, status } = req.body;
+        const allowedStatuses = ["ACTIVE", "INACTIVE"];
+        const filterStatus = allowedStatuses.includes(status) ? status : "ACTIVE";
+
+        if (!schoolId) {
+            return res.status(400).json({
+                success: false,
+                message: "schoolId is required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const [activeCount, inactiveCount] = await Promise.all([
+            Department.countDocuments({ schoolId, status: "ACTIVE" }),
+            Department.countDocuments({ schoolId, status: "INACTIVE" }),
+        ]);
+
+        const counts = {
+            ACTIVE: activeCount,
+            INACTIVE: inactiveCount,
+        };
+        const totalDepartments = activeCount + inactiveCount;
+
+        if (flag === "COUNT") {
+            return res.status(200).json({
+                success: true,
+                totalDepartments,
+                counts,
+                departmentsCount: activeCount,
+            });
+        }
+
+        const departments = await Department.find({
+            schoolId,
+            status: filterStatus,
+        })
+            .select(
+                "departmentName departmentCode departmentHead description email phone roomNumber branch color displayOrder status teacherids"
+            )
+            .sort({ displayOrder: 1, departmentName: 1 })
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            message: `${filterStatus === "ACTIVE" ? "Active" : "Inactive"} departments fetched successfully.`,
+            totalDepartments,
+            counts,
+            status: filterStatus,
+            data: departments,
+        });
+    } catch (error) {
+        console.error("getActiveDepartmentsBySchool Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
 
 module.exports = {
     createDepartment,
-    teachersToDepartment
+    teachersToDepartment,
+    getActiveDepartmentsBySchool,
 };
