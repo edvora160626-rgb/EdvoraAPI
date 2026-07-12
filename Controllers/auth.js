@@ -504,10 +504,17 @@ const pendingRequests = async (req, res) => {
         }
 
         // Role-based: return users filtered by status
-        const pendingList = await Model.find({
+        let query = Model.find({
             schoolId,
             status: filterStatus
         }).select("-password");
+
+        // Student.grade is a Class ObjectId — populate name for display
+        if (String(role).toUpperCase() === "STUDENT") {
+            query = query.populate("grade", "className section");
+        }
+
+        const pendingList = await query;
 
         return res.status(200).json({
             success: true,
