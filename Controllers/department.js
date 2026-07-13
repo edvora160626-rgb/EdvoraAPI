@@ -449,6 +449,8 @@ const getTeachersByDepartment = async (req, res) => {
             (department.teacherids || []).map((id) => String(id))
         );
 
+        console.log(teacherIdSet,"teacherIdSet")
+
         const teachersByName = await Teacher.find({
             schoolId: department.schoolId,
             department: {
@@ -460,11 +462,12 @@ const getTeachersByDepartment = async (req, res) => {
                     "i"
                 ),
             },
-            status: { $in: ["ACTIVE", "INACTIVE", "REQUESTED"] },
+            status: { $in: ["ACTIVE"] },
         })
             .select("-password -__v -forgotOtp -welcomeOTP")
             .sort({ firstName: 1, lastName: 1 })
             .lean();
+        console.log(teachersByName,"teachersByName")
 
         const teachersByIds =
             teacherIdSet.size > 0
