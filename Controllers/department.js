@@ -404,6 +404,7 @@ const getActiveDepartmentsBySchool = async (req, res) => {
     }
 };
 
+
 const getTeachersByDepartment = async (req, res) => {
     try {
         const { departmentId, schoolId } = req.body;
@@ -429,13 +430,23 @@ const getTeachersByDepartment = async (req, res) => {
             });
         }
 
-        const departmentQuery = { _id: departmentId };
-        if (schoolId) departmentQuery.schoolId = schoolId;
+        const departmentQuery = {
+            _id: departmentId,
+        };
+        console.log(departmentQuery,"departmentQuery")
+
+        if (schoolId) {
+            departmentQuery.schoolId = schoolId;
+        }
 
         const department = await Department.findOne(departmentQuery)
             .select(
-                "departmentName departmentCode color status schoolId teacherids departmentHead description"
+                "_id departmentName departmentCode color status description departmentHead schoolId"
             )
+            .populate({
+                path: "departmentHead",
+                select: "firstName lastName email phone employeeId",
+            })
             .lean();
 
         if (!department) {
@@ -445,67 +456,29 @@ const getTeachersByDepartment = async (req, res) => {
             });
         }
 
-        const teacherIdSet = new Set(
-            (department.teacherids || []).map((id) => String(id))
-        );
-
-        console.log(teacherIdSet,"teacherIdSet")
-
-        const teachersByName = await Teacher.find({
+        const teachers = await Teacher.find({
             schoolId: department.schoolId,
-            department: {
-                $regex: new RegExp(
-                    `^${department.departmentName.replace(
-                        /[.*+?^${}()|[\]\\]/g,
-                        "\\$&"
-                    )}$`,
-                    "i"
-                ),
-            },
-            status: { $in: ["ACTIVE"] },
+            department: department._id,
+            status: "ACTIVE",
         })
+            .populate({
+                path: "department",
+                select: "departmentName departmentCode color",
+            })
             .select("-password -__v -forgotOtp -welcomeOTP")
-            .sort({ firstName: 1, lastName: 1 })
+            .sort({
+                firstName: 1,
+                lastName: 1,
+            })
             .lean();
-        console.log(teachersByName,"teachersByName")
-
-        const teachersByIds =
-            teacherIdSet.size > 0
-                ? await Teacher.find({
-                      _id: { $in: [...teacherIdSet] },
-                      schoolId: department.schoolId,
-                  })
-                      .select("-password -__v -forgotOtp -welcomeOTP")
-                      .sort({ firstName: 1, lastName: 1 })
-                      .lean()
-                : [];
-
-        const staffMap = new Map();
-        for (const teacher of [...teachersByIds, ...teachersByName]) {
-            staffMap.set(String(teacher._id), teacher);
-        }
-
-        const staff = Array.from(staffMap.values()).sort((a, b) => {
-            const nameA = `${a.firstName || ""} ${a.lastName || ""}`.trim().toLowerCase();
-            const nameB = `${b.firstName || ""} ${b.lastName || ""}`.trim().toLowerCase();
-            return nameA.localeCompare(nameB);
-        });
 
         return res.status(200).json({
             success: true,
             message: "Department staff fetched successfully.",
-            totalStaff: staff.length,
+            totalStaff: teachers.length,
             data: {
-                department: {
-                    _id: department._id,
-                    departmentName: department.departmentName,
-                    departmentCode: department.departmentCode,
-                    color: department.color,
-                    status: department.status,
-                    description: department.description,
-                    departmentHead: department.departmentHead,
-                },
-                staff,
+                department,
+                staff: teachers,
             },
         });
     } catch (error) {
