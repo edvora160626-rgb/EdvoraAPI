@@ -13,6 +13,63 @@ const generateSchoolCode = () => {
     );
 };
 
+const SKIP_SCHOOL_WORDS = new Set([
+    "school",
+    "schools",
+    "the",
+    "of",
+    "and",
+    "for",
+    "a",
+    "an",
+    "at",
+]);
+
+/** e.g. "Vidya Vikas Matriculation Higher Secondary School" → "VVMHS" */
+const getSchoolInitials = (schoolName = "") => {
+    const initials = String(schoolName)
+        .trim()
+        .split(/[\s.,\-_/&]+/)
+        .map((word) => word.trim())
+        .filter((word) => word && !SKIP_SCHOOL_WORDS.has(word.toLowerCase()))
+        .map((word) => word[0].toUpperCase())
+        .join("");
+
+    return initials || "EMP";
+};
+
+const generateTeacherEmployeeId = async (schoolId) => {
+    if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
+        throw new Error("Valid schoolId is required to generate employee ID.");
+    }
+
+    const school = await School.findById(schoolId).select("schoolName").lean();
+    if (!school?.schoolName) {
+        throw new Error("School not found.");
+    }
+
+    const prefix = getSchoolInitials(school.schoolName);
+    const Teacher = getModelByRole("TEACHER");
+
+    const teachers = await Teacher.find({ schoolId }).select("employeeId").lean();
+
+    let maxSeq = 0;
+    const prefixPattern = new RegExp(
+        `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d+)$`,
+        "i"
+    );
+
+    for (const teacher of teachers) {
+        const match = String(teacher.employeeId || "").match(prefixPattern);
+        if (match) {
+            maxSeq = Math.max(maxSeq, parseInt(match[1], 10));
+        }
+    }
+
+    const nextSeq = Math.max(maxSeq, teachers.length) + 1;
+    return `${prefix}${String(nextSeq).padStart(3, "0")}`;
+};
+
 const resolveParentChildren = async (childrenInput, schoolId) => {
     if (!Array.isArray(childrenInput) || childrenInput.length === 0) {
         return { error: "Relationship and Children are required." };
@@ -144,10 +201,16 @@ const register = async (req, res) => {
                 break;
 
             case "TEACHER":
-                if (!employeeId || !department || !qualification) {
+                if (!schoolId) {
                     return res.status(400).json({
                         success: false,
-                        message: "Employee ID, Department and Qualification are required."
+                        message: "School is required for teacher signup."
+                    });
+                }
+                if (!department || !qualification) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Department and Qualification are required."
                     });
                 }
                 break;
@@ -210,11 +273,22 @@ const register = async (req, res) => {
         }
 
         if (role === "TEACHER") {
+            let autoEmployeeId;
+            try {
+                autoEmployeeId = await generateTeacherEmployeeId(schoolId);
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate employee ID.",
+                });
+            }
+
             Object.assign(userData, {
-                employeeId,
+                employeeId: autoEmployeeId,
+                staffId: autoEmployeeId,
                 department,
                 qualification,
-                subjects
+                subjects,
             });
         }
 
@@ -504,10 +578,17 @@ const pendingRequests = async (req, res) => {
         }
 
         // Role-based: return users filtered by status
-        const pendingList = await Model.find({
+        let query = Model.find({
             schoolId,
             status: filterStatus
         }).select("-password");
+
+        // Student.grade is a Class ObjectId — populate name for display
+        if (String(role).toUpperCase() === "STUDENT") {
+            query = query.populate("grade", "className section");
+        }
+
+        const pendingList = await query;
 
         return res.status(200).json({
             success: true,

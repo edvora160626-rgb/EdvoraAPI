@@ -1,4 +1,6 @@
+const mongoose = require("mongoose");
 const ClassesModel = require("../models/Classes.model");
+const Student = require("../models/Student");
 
 const addClasses = async (req, res) => {
     try {
@@ -83,9 +85,18 @@ const getActiveClassesBySchool = async (req, res) => {
             });
         }
 
+        if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
         const [activeCount, inactiveCount] = await Promise.all([
-            ClassesModel.countDocuments({ schoolId, status: "ACTIVE" }),
-            ClassesModel.countDocuments({ schoolId, status: "INACTIVE" }),
+            ClassesModel.countDocuments({ schoolId: schoolObjectId, status: "ACTIVE" }),
+            ClassesModel.countDocuments({ schoolId: schoolObjectId, status: "INACTIVE" }),
         ]);
 
         const counts = {
@@ -104,12 +115,42 @@ const getActiveClassesBySchool = async (req, res) => {
         }
 
         const classes = await ClassesModel.find({
-            schoolId,
+            schoolId: schoolObjectId,
             status: filterStatus,
         })
             .select("_id className section classTeacherId strength status")
             .sort({ className: 1, section: 1 })
             .lean();
+
+        const classIds = classes.map((cls) => cls._id);
+        let strengthByClassId = new Map();
+
+        if (classIds.length > 0) {
+            const studentCounts = await Student.aggregate([
+                {
+                    $match: {
+                        schoolId: schoolObjectId,
+                        grade: { $in: classIds },
+                        status: { $in: ["ACTIVE", "REQUESTED"] },
+                    },
+                },
+                {
+                    $group: {
+                        _id: "$grade",
+                        count: { $sum: 1 },
+                    },
+                },
+            ]);
+
+            strengthByClassId = new Map(
+                studentCounts.map((row) => [String(row._id), row.count])
+            );
+        }
+
+        const data = classes.map((cls) => ({
+            ...cls,
+            strength: strengthByClassId.get(String(cls._id)) || 0,
+        }));
 
         return res.status(200).json({
             success: true,
@@ -117,7 +158,7 @@ const getActiveClassesBySchool = async (req, res) => {
             totalClasses,
             counts,
             status: filterStatus,
-            data: classes,
+            data,
         });
 
     } catch (error) {
@@ -134,8 +175,84 @@ const getActiveClassesBySchool = async (req, res) => {
     }
 };
 
+const getStudentsByClass = async (req, res) => {
+    try {
+        const { classId, schoolId } = req.body;
 
+        if (!classId) {
+            return res.status(400).json({
+                success: false,
+                message: "classId is required.",
+            });
+        }
 
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid classId.",
+            });
+        }
 
+        if (schoolId && !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
 
-module.exports = { addClasses, getActiveClassesBySchool };
+        const classQuery = { _id: classId };
+        if (schoolId) classQuery.schoolId = schoolId;
+
+        const classDoc = await ClassesModel.findOne(classQuery)
+            .select("_id className section status schoolId strength")
+            .lean();
+
+        if (!classDoc) {
+            return res.status(404).json({
+                success: false,
+                message: "Class not found.",
+            });
+        }
+
+        const studentQuery = {
+            grade: classDoc._id,
+            schoolId: classDoc.schoolId,
+            status: { $in: ["ACTIVE", "REQUESTED", "INACTIVE"] },
+        };
+
+        const students = await Student.find(studentQuery)
+            .select(
+                "-password -__v -forgotOtp -welcomeOTP"
+            )
+            .sort({ firstName: 1, lastName: 1 })
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            message: "Class students fetched successfully.",
+            totalStudents: students.length,
+            data: {
+                class: {
+                    _id: classDoc._id,
+                    className: classDoc.className,
+                    section: classDoc.section,
+                    status: classDoc.status,
+                },
+                students,
+            },
+        });
+    } catch (error) {
+        console.error("getStudentsByClass Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+module.exports = { addClasses, getActiveClassesBySchool, getStudentsByClass };

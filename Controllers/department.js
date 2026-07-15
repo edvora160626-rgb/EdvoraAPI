@@ -2,7 +2,6 @@ const mongoose = require("mongoose");
 const Department = require("../models/Departments.model");
 const Teacher = require("../models/Teacher");
 const School = require("../models/School");
-const DepartmentsModel = require("../models/Departments.model");
 
 const createDepartment = async (req, res) => {
     try {
@@ -172,36 +171,115 @@ const createDepartment = async (req, res) => {
 
 const teachersToDepartment = async (req, res) => {
     try {
-        const { departmentid, teacherid } = req.body
+        const departmentId = req.body.departmentId || req.body.departmentid;
+        const teacherIdsRaw =
+            req.body.teacherIds ||
+            req.body.teacherid ||
+            (req.body.teacherId ? [req.body.teacherId] : null);
 
-        if (!departmentid || !Array.isArray(teacherid) || teacherid.length === 0) {
+        const teacherIds = Array.isArray(teacherIdsRaw)
+            ? teacherIdsRaw
+            : teacherIdsRaw
+              ? [teacherIdsRaw]
+              : [];
+
+        if (!departmentId || teacherIds.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: "Departmentid and teacher ids are required"
-            })
+                message: "departmentId and teacherId are required.",
+            });
         }
 
-        await DepartmentsModel.findByIdAndUpdate(departmentid, {
-            $addToSet: {
-                TeacherIds: { $each: teacherid }
-            }
-        }, { new: true })
+        if (!mongoose.Types.ObjectId.isValid(departmentId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid departmentId.",
+            });
+        }
 
+        for (const id of teacherIds) {
+            if (!mongoose.Types.ObjectId.isValid(id)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid teacherId.",
+                });
+            }
+        }
+
+        const department = await Department.findById(departmentId)
+            .select("departmentName schoolId teacherids")
+            .lean();
+
+        if (!department) {
+            return res.status(404).json({
+                success: false,
+                message: "Department not found.",
+            });
+        }
+
+        const teachers = await Teacher.find({
+            _id: { $in: teacherIds },
+            schoolId: department.schoolId,
+        })
+            .select("_id firstName lastName department status")
+            .lean();
+
+        if (teachers.length !== teacherIds.length) {
+            return res.status(404).json({
+                success: false,
+                message: "One or more staff members were not found.",
+            });
+        }
+
+        const existingIds = new Set(
+            (department.teacherids || []).map((id) => String(id))
+        );
+        const deptName = (department.departmentName || "").trim().toLowerCase();
+
+        const alreadyAssigned = teachers.filter((teacher) => {
+            const byId = existingIds.has(String(teacher._id));
+            const byName =
+                (teacher.department || "").trim().toLowerCase() === deptName;
+            return byId || byName;
+        });
+
+        if (alreadyAssigned.length > 0) {
+            const names = alreadyAssigned
+                .map((t) =>
+                    [t.firstName, t.lastName].filter(Boolean).join(" ").trim()
+                )
+                .filter(Boolean)
+                .join(", ");
+
+            return res.status(409).json({
+                success: false,
+                message: names
+                    ? `${names} is already assigned to this department.`
+                    : "Staff member is already assigned to this department.",
+            });
+        }
+
+        // Add to department.teacherids only — do not change Teacher.department
+        // so the staff member remains in their existing department as well.
+        const updated = await Department.findByIdAndUpdate(
+            departmentId,
+            {
+                $addToSet: {
+                    teacherids: { $each: teacherIds },
+                },
+            },
+            { new: true }
+        )
+            .select("departmentName teacherids")
+            .lean();
 
         return res.status(200).json({
             success: true,
-            message: "Teachers assigned to department successfully.",
+            message: "Staff assigned to department successfully.",
+            data: updated,
         });
     } catch (error) {
-        console.error("createDepartment Error:", error);
-
-        // Duplicate Key Error
-        if (error.code === 11000) {
-            return res.status(409).json({
-                success: false,
-                message: "Department name or code already exists.",
-            });
-        }
+        console.error("teachersToDepartment Error:", error);
 
         return res.status(500).json({
             success: false,
@@ -212,7 +290,7 @@ const teachersToDepartment = async (req, res) => {
                     : "Something went wrong",
         });
     }
-}
+};
 
 const totalActiveTeachers = async (req, res) => {
     try {
@@ -326,8 +404,124 @@ const getActiveDepartmentsBySchool = async (req, res) => {
     }
 };
 
+const getTeachersByDepartment = async (req, res) => {
+    try {
+        const { departmentId, schoolId } = req.body;
+
+        if (!departmentId) {
+            return res.status(400).json({
+                success: false,
+                message: "departmentId is required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(departmentId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid departmentId.",
+            });
+        }
+
+        if (schoolId && !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const departmentQuery = { _id: departmentId };
+        if (schoolId) departmentQuery.schoolId = schoolId;
+
+        const department = await Department.findOne(departmentQuery)
+            .select(
+                "departmentName departmentCode color status schoolId teacherids departmentHead description"
+            )
+            .lean();
+
+        if (!department) {
+            return res.status(404).json({
+                success: false,
+                message: "Department not found.",
+            });
+        }
+
+        const teacherIdSet = new Set(
+            (department.teacherids || []).map((id) => String(id))
+        );
+
+        const teachersByName = await Teacher.find({
+            schoolId: department.schoolId,
+            department: {
+                $regex: new RegExp(
+                    `^${department.departmentName.replace(
+                        /[.*+?^${}()|[\]\\]/g,
+                        "\\$&"
+                    )}$`,
+                    "i"
+                ),
+            },
+            status: { $in: ["ACTIVE", "INACTIVE", "REQUESTED"] },
+        })
+            .select("-password -__v -forgotOtp -welcomeOTP")
+            .sort({ firstName: 1, lastName: 1 })
+            .lean();
+
+        const teachersByIds =
+            teacherIdSet.size > 0
+                ? await Teacher.find({
+                      _id: { $in: [...teacherIdSet] },
+                      schoolId: department.schoolId,
+                  })
+                      .select("-password -__v -forgotOtp -welcomeOTP")
+                      .sort({ firstName: 1, lastName: 1 })
+                      .lean()
+                : [];
+
+        const staffMap = new Map();
+        for (const teacher of [...teachersByIds, ...teachersByName]) {
+            staffMap.set(String(teacher._id), teacher);
+        }
+
+        const staff = Array.from(staffMap.values()).sort((a, b) => {
+            const nameA = `${a.firstName || ""} ${a.lastName || ""}`.trim().toLowerCase();
+            const nameB = `${b.firstName || ""} ${b.lastName || ""}`.trim().toLowerCase();
+            return nameA.localeCompare(nameB);
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Department staff fetched successfully.",
+            totalStaff: staff.length,
+            data: {
+                department: {
+                    _id: department._id,
+                    departmentName: department.departmentName,
+                    departmentCode: department.departmentCode,
+                    color: department.color,
+                    status: department.status,
+                    description: department.description,
+                    departmentHead: department.departmentHead,
+                },
+                staff,
+            },
+        });
+    } catch (error) {
+        console.error("getTeachersByDepartment Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
 module.exports = {
     createDepartment,
     teachersToDepartment,
     getActiveDepartmentsBySchool,
+    getTeachersByDepartment,
 };

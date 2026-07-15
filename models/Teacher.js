@@ -40,4 +40,8 @@ const teacherSchema = new mongoose.Schema(
     }
 );
 
+teacherSchema.index({ schoolId: 1, status: 1 });
+teacherSchema.index({ schoolId: 1, employeeId: 1 });
+teacherSchema.index({ schoolId: 1, email: 1 });
+
 module.exports = mongoose.model("Teacher", teacherSchema);
