@@ -201,18 +201,29 @@ const register = async (req, res) => {
                 break;
 
             case "TEACHER":
-                if (!schoolId) {
+                if (
+                    !employeeId ||
+                    !Array.isArray(department) ||
+                    department.length === 0 ||
+                    !qualification
+                ) {
                     return res.status(400).json({
                         success: false,
-                        message: "School is required for teacher signup."
+                        message: "Employee ID, at least one Department, and Qualification are required."
                     });
                 }
-                if (!department || !qualification) {
+
+                const invalidDepartment = department.some(
+                    (id) => !mongoose.Types.ObjectId.isValid(id)
+                );
+
+                if (invalidDepartment) {
                     return res.status(400).json({
                         success: false,
-                        message: "Department and Qualification are required."
+                        message: "One or more Department IDs are invalid."
                     });
                 }
+
                 break;
 
             case "PARENT":
@@ -284,9 +295,8 @@ const register = async (req, res) => {
             }
 
             Object.assign(userData, {
-                employeeId: autoEmployeeId,
-                staffId: autoEmployeeId,
-                department,
+                employeeId,
+                department: department.map(id => new mongoose.Types.ObjectId(id)),
                 qualification,
                 subjects,
             });
@@ -337,8 +347,8 @@ const register = async (req, res) => {
                     field === "grade"
                         ? "Grade must be a valid Class ID from the selected school."
                         : field === "children"
-                          ? "Invalid children value. Use student admission numbers or valid student IDs."
-                          : `Invalid value for ${field}.`,
+                            ? "Invalid children value. Use student admission numbers or valid student IDs."
+                            : `Invalid value for ${field}.`,
             });
         }
 

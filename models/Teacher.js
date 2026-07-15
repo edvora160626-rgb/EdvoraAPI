@@ -19,9 +19,12 @@ const teacherSchema = new mongoose.Schema(
             type: String,
         },
 
-        department: {
-            type: String,
-        },
+        department: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "Department",
+            }
+        ],
 
         qualification: {
             type: String,
