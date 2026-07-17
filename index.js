@@ -30,12 +30,14 @@ app.get("/", (req, res) => {
 const schoolRoutes = require("./routes/auth.routes");
 const departmentRoutes = require("./routes/department.routes");
 const classesRoutes = require("./routes/classes.routes");
+const attendanceRoutes = require("./routes/attendance.routes");
 
 
 
 app.use("/auth", schoolRoutes);
 app.use("/department", departmentRoutes);
 app.use("/class", classesRoutes);
+app.use("/attendance", attendanceRoutes);
 
 
 // Database Connection

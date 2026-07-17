@@ -28,4 +28,8 @@ const studentSchema = new mongoose.Schema(
     }
 );
 
+studentSchema.index({ schoolId: 1, status: 1 });
+studentSchema.index({ schoolId: 1, grade: 1, status: 1 });
+studentSchema.index({ schoolId: 1, admissionNumber: 1 });
+
 module.exports = mongoose.model("Student", studentSchema);
