@@ -19,9 +19,12 @@ const teacherSchema = new mongoose.Schema(
             type: String,
         },
 
-        department: {
-            type: String,
-        },
+        department: [
+            {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "Department",
+            }
+        ],
 
         qualification: {
             type: String,
@@ -39,5 +42,9 @@ const teacherSchema = new mongoose.Schema(
         timestamps: true,
     }
 );
+
+teacherSchema.index({ schoolId: 1, status: 1 });
+teacherSchema.index({ schoolId: 1, employeeId: 1 });
+teacherSchema.index({ schoolId: 1, email: 1 });
 
 module.exports = mongoose.model("Teacher", teacherSchema);

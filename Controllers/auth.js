@@ -5,6 +5,7 @@ const School = require("../models/School");
 const Student = require("../models/Student");
 const generateToken = require("../utils/generateJwt");
 const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
+const { generateTeacherStaffId } = require("../utils/generateStaffId");
 
 const generateSchoolCode = () => {
     return (
@@ -144,12 +145,28 @@ const register = async (req, res) => {
                 break;
 
             case "TEACHER":
-                if (!employeeId || !department || !qualification) {
+                if (
+                    !Array.isArray(department) ||
+                    department.length === 0 ||
+                    !qualification
+                ) {
                     return res.status(400).json({
                         success: false,
-                        message: "Employee ID, Department and Qualification are required."
+                        message: "At least one Department and Qualification are required.",
                     });
                 }
+
+                const invalidDepartment = department.some(
+                    (id) => !mongoose.Types.ObjectId.isValid(id)
+                );
+
+                if (invalidDepartment) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "One or more Department IDs are invalid."
+                    });
+                }
+
                 break;
 
             case "PARENT":
@@ -210,11 +227,22 @@ const register = async (req, res) => {
         }
 
         if (role === "TEACHER") {
+            let autoStaffId;
+            try {
+                autoStaffId = await generateTeacherStaffId(schoolId);
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate staff ID.",
+                });
+            }
+
             Object.assign(userData, {
-                employeeId,
-                department,
+                staffId: autoStaffId,
+                employeeId: autoStaffId,
+                department: department.map(id => new mongoose.Types.ObjectId(id)),
                 qualification,
-                subjects
+                subjects,
             });
         }
 
@@ -263,8 +291,8 @@ const register = async (req, res) => {
                     field === "grade"
                         ? "Grade must be a valid Class ID from the selected school."
                         : field === "children"
-                          ? "Invalid children value. Use student admission numbers or valid student IDs."
-                          : `Invalid value for ${field}.`,
+                            ? "Invalid children value. Use student admission numbers or valid student IDs."
+                            : `Invalid value for ${field}.`,
             });
         }
 
@@ -504,10 +532,17 @@ const pendingRequests = async (req, res) => {
         }
 
         // Role-based: return users filtered by status
-        const pendingList = await Model.find({
+        let query = Model.find({
             schoolId,
             status: filterStatus
         }).select("-password");
+
+        // Student.grade is a Class ObjectId — populate name for display
+        if (String(role).toUpperCase() === "STUDENT") {
+            query = query.populate("grade", "className section");
+        }
+
+        const pendingList = await query;
 
         return res.status(200).json({
             success: true,
@@ -562,11 +597,7 @@ const acceptOrRejectRequest = async (req, res) => {
             });
         }
 
-        const user = await Model.findByIdAndUpdate(
-            userId,
-            { status },
-            { new: true }
-        ).select("-password");
+        const user = await Model.findById(userId).select("-password");
 
         if (!user) {
             return res.status(404).json({
@@ -574,6 +605,30 @@ const acceptOrRejectRequest = async (req, res) => {
                 message: "User not found"
             });
         }
+
+        const updatePayload = { status };
+
+        if (
+            status === "ACTIVE" &&
+            role === "TEACHER" &&
+            !user.staffId
+        ) {
+            try {
+                const autoStaffId = await generateTeacherStaffId(user.schoolId);
+                updatePayload.staffId = autoStaffId;
+                if (!user.employeeId) {
+                    updatePayload.employeeId = autoStaffId;
+                }
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate staff ID.",
+                });
+            }
+        }
+
+        Object.assign(user, updatePayload);
+        await user.save();
 
         return res.status(200).json({
             success: true,
@@ -650,10 +705,10 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 break;
 
             case "TEACHER":
-                if (!employeeId || !department || !qualification) {
+                if (!department || !qualification) {
                     return res.status(400).json({
                         success: false,
-                        message: "Teacher details are required."
+                        message: "Department and Qualification are required."
                     });
                 }
                 break;
@@ -731,7 +786,18 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
         }
 
         if (role === "TEACHER") {
-            userData.employeeId = employeeId;
+            let autoStaffId;
+            try {
+                autoStaffId = await generateTeacherStaffId(schoolId);
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate staff ID.",
+                });
+            }
+
+            userData.staffId = autoStaffId;
+            userData.employeeId = autoStaffId;
             userData.department = department;
             userData.qualification = qualification;
             userData.subjects = subjects;
@@ -968,6 +1034,186 @@ const getAllSchools = async (req, res) => {
     }
 };
 
+const updateProfile = async (req, res) => {
+    try {
+        const {
+            userId,
+            role,
+            firstName,
+            lastName,
+            email,
+            phone,
+            phoneCode,
+            gender,
+            dob,
+            address,
+        } = req.body;
+
+        if (!userId || !role) {
+            return res.status(400).json({
+                success: false,
+                message: "userId and role are required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid userId.",
+            });
+        }
+
+        const Model = getModelByRole(role);
+        if (!Model) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid role.",
+            });
+        }
+
+        const user = await Model.findById(userId);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found.",
+            });
+        }
+
+        if (firstName !== undefined) {
+            const trimmed = String(firstName).trim();
+            if (!trimmed) {
+                return res.status(400).json({
+                    success: false,
+                    message: "First name is required.",
+                });
+            }
+            user.firstName = trimmed;
+        }
+
+        if (lastName !== undefined) {
+            user.lastName = String(lastName).trim();
+        }
+
+        if (email !== undefined) {
+            const nextEmail = String(email).trim().toLowerCase();
+            if (!nextEmail) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Email is required.",
+                });
+            }
+
+            if (nextEmail !== user.email) {
+                const emailTaken = await Model.findOne({
+                    email: nextEmail,
+                    _id: { $ne: userId },
+                }).lean();
+
+                if (emailTaken) {
+                    return res.status(409).json({
+                        success: false,
+                        message: "Email already exists.",
+                    });
+                }
+            }
+
+            user.email = nextEmail;
+        }
+
+        if (phone !== undefined) {
+            const nextPhone = String(phone).trim();
+            if (!nextPhone) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Phone is required.",
+                });
+            }
+
+            if (nextPhone !== user.phone) {
+                const phoneTaken = await Model.findOne({
+                    phone: nextPhone,
+                    _id: { $ne: userId },
+                }).lean();
+
+                if (phoneTaken) {
+                    return res.status(409).json({
+                        success: false,
+                        message: "Phone already exists.",
+                    });
+                }
+            }
+
+            user.phone = nextPhone;
+        }
+
+        if (phoneCode !== undefined) {
+            user.phoneCode = String(phoneCode).trim();
+        }
+
+        if (gender !== undefined) {
+            const nextGender = String(gender).trim();
+            if (nextGender && !["Male", "Female", "Other"].includes(nextGender)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Gender must be Male, Female, or Other.",
+                });
+            }
+            user.gender = nextGender || undefined;
+        }
+
+        if (dob !== undefined) {
+            if (!dob) {
+                user.dob = undefined;
+            } else {
+                const parsed = new Date(dob);
+                if (Number.isNaN(parsed.getTime())) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid date of birth.",
+                    });
+                }
+                user.dob = parsed;
+            }
+        }
+
+        if (address !== undefined) {
+            user.address = String(address).trim();
+        }
+
+        await user.save();
+
+        const userData = user.toObject();
+        delete userData.password;
+        delete userData.forgotOtp;
+        delete userData.welcomeOTP;
+
+        return res.status(200).json({
+            success: true,
+            message: "Profile updated successfully.",
+            data: userData,
+        });
+    } catch (error) {
+        console.error("updateProfile Error:", error);
+
+        if (error?.code === 11000) {
+            const field = Object.keys(error.keyPattern || {})[0] || "field";
+            return res.status(409).json({
+                success: false,
+                message: `${field} already exists.`,
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
 module.exports = {
     getAllSchools,
     register,
@@ -978,5 +1224,6 @@ module.exports = {
     setNewPassword,
     createStudentTeacherParentSchoolAdmin,
     verifyForgotOtp,
-    forgotPassword
+    forgotPassword,
+    updateProfile,
 };
