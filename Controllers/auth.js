@@ -5,7 +5,10 @@ const School = require("../models/School");
 const Student = require("../models/Student");
 const generateToken = require("../utils/generateJwt");
 const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
-const { generateTeacherStaffId } = require("../utils/generateStaffId");
+const { generateStaffEmployeeId } = require("../utils/generateStaffId");
+
+const normalizePhoneCode = (value) =>
+    String(value ?? "").replace(/\D/g, "") || "91";
 
 const generateSchoolCode = () => {
     return (
@@ -89,6 +92,7 @@ const register = async (req, res) => {
             relationship,
             children
         } = req.body;
+        const normalizedPhoneCode = normalizePhoneCode(phonecode);
 
         if (
             !role ||
@@ -96,7 +100,6 @@ const register = async (req, res) => {
             !lastName ||
             !email ||
             !phone ||
-            !phonecode ||
             !password
         ) {
             return res.status(400).json({
@@ -192,7 +195,7 @@ const register = async (req, res) => {
                 { email },
                 {
                     phone,
-                    phoneCode: phonecode
+                    phoneCode: normalizedPhoneCode
                 }
             ]
         }).lean();
@@ -213,7 +216,7 @@ const register = async (req, res) => {
             lastName,
             email,
             phone,
-            phoneCode: phonecode,
+            phoneCode: normalizedPhoneCode,
             password: hashedPassword
         };
 
@@ -229,7 +232,7 @@ const register = async (req, res) => {
         if (role === "TEACHER") {
             let autoStaffId;
             try {
-                autoStaffId = await generateTeacherStaffId(schoolId);
+                autoStaffId = await generateStaffEmployeeId(schoolId);
             } catch (genError) {
                 return res.status(400).json({
                     success: false,
@@ -244,6 +247,17 @@ const register = async (req, res) => {
                 qualification,
                 subjects,
             });
+        }
+
+        if (role === "SCHOOL_ADMIN") {
+            try {
+                userData.employeeId = await generateStaffEmployeeId(schoolId);
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate employee ID.",
+                });
+            }
         }
 
         if (role === "PARENT") {
@@ -677,6 +691,7 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             relationship,
             children
         } = req.body;
+        const normalizedPhoneCode = normalizePhoneCode(phonecode);
 
         if (
             !schoolId ||
@@ -684,7 +699,6 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             !firstName ||
             !lastName ||
             !email ||
-            !phonecode ||
             !phone ||
             !gender
         ) {
@@ -748,7 +762,7 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 { email },
                 {
                     phone,
-                    phoneCode: phonecode
+                    phoneCode: normalizedPhoneCode
                 }
             ]
         });
@@ -769,7 +783,7 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             lastName,
             email,
             phone,
-            phoneCode: phonecode,
+            phoneCode: normalizedPhoneCode,
             password: null,
             isVerified: false,
             welcomeOTP: otp,
@@ -788,7 +802,7 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
         if (role === "TEACHER") {
             let autoStaffId;
             try {
-                autoStaffId = await generateTeacherStaffId(schoolId);
+                autoStaffId = await generateStaffEmployeeId(schoolId);
             } catch (genError) {
                 return res.status(400).json({
                     success: false,
@@ -801,6 +815,17 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             userData.department = department;
             userData.qualification = qualification;
             userData.subjects = subjects;
+        }
+
+        if (role === "SCHOOL_ADMIN") {
+            try {
+                userData.employeeId = await generateStaffEmployeeId(schoolId);
+            } catch (genError) {
+                return res.status(400).json({
+                    success: false,
+                    message: genError.message || "Failed to generate employee ID.",
+                });
+            }
         }
 
         if (role === "PARENT") {
@@ -1147,7 +1172,9 @@ const updateProfile = async (req, res) => {
         }
 
         if (phoneCode !== undefined) {
-            user.phoneCode = String(phoneCode).trim();
+            user.phoneCode = normalizePhoneCode(phoneCode);
+        } else if (!user.phoneCode) {
+            user.phoneCode = "91";
         }
 
         if (gender !== undefined) {

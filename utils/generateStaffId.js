@@ -48,9 +48,10 @@ function parseStaffSeq(id, prefix) {
 }
 
 /**
- * Auto staff ID from school name initials: VVMHS_001, VVMHS_002, ...
+ * Auto employee ID shared by teachers and school admins:
+ * VVMHS_001, VVMHS_002, ...
  */
-async function generateTeacherStaffId(schoolId) {
+async function generateStaffEmployeeId(schoolId) {
     if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
         throw new Error("Valid schoolId is required to generate staff ID.");
     }
@@ -61,18 +62,23 @@ async function generateTeacherStaffId(schoolId) {
     }
 
     const prefix = getSchoolInitials(school.schoolName);
-    const Teacher = getModelByRole("TEACHER");
-
-    const teachers = await Teacher.find({ schoolId })
-        .select("staffId employeeId")
-        .lean();
+    const staffModels = [
+        getModelByRole("TEACHER"),
+        getModelByRole("SCHOOL_ADMIN"),
+    ];
+    const staffGroups = await Promise.all(
+        staffModels.map((Model) =>
+            Model.find({ schoolId }).select("staffId employeeId").lean()
+        )
+    );
+    const staffMembers = staffGroups.flat();
 
     let maxSeq = 0;
-    for (const teacher of teachers) {
+    for (const staffMember of staffMembers) {
         maxSeq = Math.max(
             maxSeq,
-            parseStaffSeq(teacher.staffId, prefix),
-            parseStaffSeq(teacher.employeeId, prefix)
+            parseStaffSeq(staffMember.staffId, prefix),
+            parseStaffSeq(staffMember.employeeId, prefix)
         );
     }
 
@@ -134,7 +140,8 @@ async function ensureTeachersHaveStaffIds(schoolId, teachers = []) {
 
 module.exports = {
     getSchoolInitials,
-    generateTeacherStaffId,
+    generateStaffEmployeeId,
+    generateTeacherStaffId: generateStaffEmployeeId,
     ensureTeachersHaveStaffIds,
     isSchoolStaffId,
 };

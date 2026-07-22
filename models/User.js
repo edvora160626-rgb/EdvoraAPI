@@ -48,6 +48,8 @@ const userSchema = new mongoose.Schema(
         phoneCode:{
              type: String,
             required: true,
+            default: "91",
+            set: (value) => String(value ?? "").replace(/\D/g, "") || "91",
         },
 
         password: {

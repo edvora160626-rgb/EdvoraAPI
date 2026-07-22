@@ -131,7 +131,7 @@ const createDepartment = async (req, res) => {
             description: description?.trim() || "",
             email: email?.trim().toLowerCase() || "",
             phone: phone?.trim() || "",
-            phoneCode: phoneCode?.trim() || "",
+            phoneCode: String(phoneCode || "91").replace(/\D/g, "") || "91",
             roomNumber: roomNumber?.trim() || "",
             branch: branch?.trim() || "",
             parentDepartment: parentDepartment || null,
@@ -377,7 +377,7 @@ const getActiveDepartmentsBySchool = async (req, res) => {
             status: filterStatus,
         })
             .select(
-                "departmentName departmentCode departmentHead description email phone roomNumber branch color displayOrder status teacherids"
+                "departmentName departmentCode departmentHead description email phone phoneCode roomNumber branch color displayOrder status teacherids"
             )
             .sort({ displayOrder: 1, departmentName: 1 })
             .lean();
@@ -440,11 +440,11 @@ const getTeachersByDepartment = async (req, res) => {
 
         const department = await Department.findOne(departmentQuery)
             .select(
-                "_id departmentName departmentCode color status description departmentHead schoolId"
+                "_id departmentName departmentCode color status description email phone phoneCode departmentHead schoolId"
             )
             .populate({
                 path: "departmentHead",
-                select: "firstName lastName email phone employeeId",
+                select: "firstName lastName email phone phoneCode employeeId",
             })
             .lean();
 
