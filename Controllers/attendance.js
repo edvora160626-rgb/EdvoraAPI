@@ -143,7 +143,8 @@ const getTeachersForAttendance = async (req, res) => {
 
         const [teachers, existing] = await Promise.all([
             Teacher.find({ schoolId, status: "ACTIVE" })
-                .select("firstName lastName email employeeId staffId")
+                .select("firstName lastName email employeeId staffId department")
+                .populate("department", "departmentName")
                 .sort({ firstName: 1, lastName: 1 })
                 .lean(),
             Attendance.findOne({
@@ -162,6 +163,16 @@ const getTeachersForAttendance = async (req, res) => {
 
         const data = teachers.map((teacher) => {
             const marked = statusMap.get(String(teacher._id));
+            const departments = Array.isArray(teacher.department)
+                ? teacher.department
+                : teacher.department
+                  ? [teacher.department]
+                  : [];
+            const departmentName = departments
+                .map((dept) => dept?.departmentName)
+                .filter(Boolean)
+                .join(" / ");
+
             return {
                 _id: teacher._id,
                 firstName: teacher.firstName,
@@ -169,6 +180,7 @@ const getTeachersForAttendance = async (req, res) => {
                 email: teacher.email,
                 employeeId: teacher.employeeId,
                 staffId: teacher.staffId,
+                department: departmentName,
                 attendanceStatus: marked?.status || null,
                 remarks: marked?.remarks || "",
             };

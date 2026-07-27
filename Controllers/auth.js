@@ -3,12 +3,91 @@ const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const School = require("../models/School");
 const Student = require("../models/Student");
+const Department = require("../models/Departments.model");
 const generateToken = require("../utils/generateJwt");
 const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
 const { generateStaffEmployeeId } = require("../utils/generateStaffId");
 
 const normalizePhoneCode = (value) =>
     String(value ?? "").replace(/\D/g, "") || "91";
+
+const toDepartmentId = (value) => {
+    if (!value) return "";
+    if (typeof value === "object") {
+        // Already populated department doc
+        if (value.departmentName) return "";
+        const fromProps = value._id || value.id;
+        if (fromProps) return String(fromProps).trim();
+        // Bare ObjectId from lean()/unpopulated ref
+        if (typeof value.toString === "function") {
+            const asString = String(value.toString());
+            if (/^[a-f\d]{24}$/i.test(asString)) return asString;
+        }
+        return "";
+    }
+    return String(value).trim();
+};
+
+const formatDepartmentLabel = (dept) => {
+    if (!dept || typeof dept !== "object" || !dept.departmentName) return "";
+    return dept.departmentCode
+        ? `${dept.departmentName} (${dept.departmentCode})`
+        : dept.departmentName;
+};
+
+const resolveTeacherDepartmentLabels = async (users = []) => {
+    const idSet = new Set();
+
+    for (const user of users) {
+        const departments = Array.isArray(user.department)
+            ? user.department
+            : user.department
+              ? [user.department]
+              : [];
+
+        for (const dept of departments) {
+            if (dept && typeof dept === "object" && dept.departmentName) continue;
+            const id = toDepartmentId(dept);
+            if (id && mongoose.Types.ObjectId.isValid(id)) idSet.add(id);
+        }
+    }
+
+    const nameById = new Map();
+    if (idSet.size) {
+        const docs = await Department.find({
+            _id: { $in: Array.from(idSet) },
+        })
+            .select("departmentName departmentCode")
+            .lean();
+
+        for (const doc of docs) {
+            nameById.set(String(doc._id), formatDepartmentLabel(doc));
+        }
+    }
+
+    return users.map((user) => {
+        const departments = Array.isArray(user.department)
+            ? user.department
+            : user.department
+              ? [user.department]
+              : [];
+
+        const department = departments
+            .map((dept) => {
+                if (dept && typeof dept === "object" && dept.departmentName) {
+                    return formatDepartmentLabel(dept);
+                }
+                return nameById.get(toDepartmentId(dept)) || "";
+            })
+            .filter(Boolean)
+            .join(", ");
+
+        return {
+            ...user,
+            department,
+        };
+    });
+};
 
 const generateSchoolCode = () => {
     return (
@@ -556,12 +635,25 @@ const pendingRequests = async (req, res) => {
             query = query.populate("grade", "className section");
         }
 
-        const pendingList = await query;
+        // Teacher.department is Department ObjectId[] — populate + resolve names
+        if (String(role).toUpperCase() === "TEACHER") {
+            query = query.populate({
+                path: "department",
+                select: "departmentName departmentCode",
+            });
+        }
+
+        const pendingList = await query.lean();
+
+        const data =
+            String(role).toUpperCase() === "TEACHER"
+                ? await resolveTeacherDepartmentLabels(pendingList)
+                : pendingList;
 
         return res.status(200).json({
             success: true,
-            count: pendingList.length,
-            data: pendingList
+            count: data.length,
+            data,
         });
 
     } catch (error) {
