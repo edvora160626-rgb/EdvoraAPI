@@ -32,13 +32,13 @@ const schoolRoutes = require("./routes/auth.routes");
 const departmentRoutes = require("./routes/department.routes");
 const classesRoutes = require("./routes/classes.routes");
 const attendanceRoutes = require("./routes/attendance.routes");
-
-
+const eventsRoutes = require("./routes/events.routes");
 
 app.use("/auth", schoolRoutes);
 app.use("/department", departmentRoutes);
 app.use("/class", classesRoutes);
 app.use("/attendance", attendanceRoutes);
+app.use("/events", eventsRoutes);
 
 
 // Database Connection
