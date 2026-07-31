@@ -78,7 +78,7 @@ const addClasses = async (req, res) => {
 
 const getActiveClassesBySchool = async (req, res) => {
     try {
-        const { schoolId, flag, status } = req.body;
+        const { schoolId, flag, status, classTeacherId } = req.body;
         const allowedStatuses = ["ACTIVE", "INACTIVE"];
         const filterStatus = allowedStatuses.includes(status) ? status : "ACTIVE";
 
@@ -93,6 +93,16 @@ const getActiveClassesBySchool = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: "Invalid schoolId.",
+            });
+        }
+
+        if (
+            classTeacherId &&
+            !mongoose.Types.ObjectId.isValid(classTeacherId)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid classTeacherId.",
             });
         }
 
@@ -118,10 +128,15 @@ const getActiveClassesBySchool = async (req, res) => {
             });
         }
 
-        const classes = await ClassesModel.find({
+        const classQuery = {
             schoolId: schoolObjectId,
             status: filterStatus,
-        })
+        };
+        if (classTeacherId) {
+            classQuery.classTeacherId = classTeacherId;
+        }
+
+        const classes = await ClassesModel.find(classQuery)
             .select("_id className section classTeacherId strength status")
             .sort({ className: 1, section: 1 })
             .lean();

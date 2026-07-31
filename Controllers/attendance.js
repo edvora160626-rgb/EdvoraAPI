@@ -89,6 +89,58 @@ async function resolveClassLabel(classId) {
     return `${classInfo.className} · Sec ${classInfo.section}`;
 }
 
+const ADMIN_ROLES = new Set([
+    "SCHOOL_ADMIN",
+    "SUPER_ADMIN",
+    "PRODUCT_ADMIN",
+]);
+
+/**
+ * Student attendance is scoped to the assigned class teacher
+ * (Classes.classTeacherId). School/product admins can access any class.
+ */
+async function assertStudentClassAccess({ schoolId, classId, actorId }) {
+    if (!classId || !mongoose.Types.ObjectId.isValid(classId)) {
+        return { ok: false, status: 400, message: "Valid classId is required." };
+    }
+
+    const classDoc = await ClassesModel.findOne({ _id: classId, schoolId })
+        .select("className section classTeacherId status")
+        .lean();
+
+    if (!classDoc) {
+        return { ok: false, status: 404, message: "Class not found." };
+    }
+
+    if (!actorId || !mongoose.Types.ObjectId.isValid(actorId)) {
+        return {
+            ok: false,
+            status: 400,
+            message: "teacherId / markedBy is required for student attendance.",
+        };
+    }
+
+    if (
+        classDoc.classTeacherId &&
+        String(classDoc.classTeacherId) === String(actorId)
+    ) {
+        return { ok: true, classDoc };
+    }
+
+    const found = await findUserAcrossModels({ _id: actorId });
+    const role = found?.user?.role || "";
+    if (ADMIN_ROLES.has(role)) {
+        return { ok: true, classDoc };
+    }
+
+    return {
+        ok: false,
+        status: 403,
+        message:
+            "Only the assigned class teacher can view or mark attendance for this class.",
+    };
+}
+
 async function writeAttendanceLog({
     schoolId,
     type,
@@ -204,9 +256,9 @@ const getTeachersForAttendance = async (req, res) => {
     }
 };
 
-const getStudentsForAttendance = async (req, res) => {
+const getAssignedClassesForAttendance = async (req, res) => {
     try {
-        const { schoolId, classId, date } = req.body;
+        const { schoolId, teacherId, date } = req.body;
 
         if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
             return res.status(400).json({
@@ -215,21 +267,132 @@ const getStudentsForAttendance = async (req, res) => {
             });
         }
 
-        if (!classId || !mongoose.Types.ObjectId.isValid(classId)) {
+        if (!teacherId || !mongoose.Types.ObjectId.isValid(teacherId)) {
             return res.status(400).json({
                 success: false,
-                message: "Valid classId is required.",
+                message: "Valid teacherId is required.",
             });
         }
 
         const attendanceDate = parseLocalDate(date) || parseLocalDate(new Date());
+        const found = await findUserAcrossModels({ _id: teacherId });
+        const role = found?.user?.role || "";
 
-        const [classInfo, students, existing] = await Promise.all([
-            ClassesModel.findOne({ _id: classId, schoolId })
-                .select("className section status")
-                .lean(),
+        const classFilter = {
+            schoolId,
+            status: "ACTIVE",
+        };
+
+        if (!ADMIN_ROLES.has(role)) {
+            classFilter.classTeacherId = teacherId;
+        }
+
+        const classes = await ClassesModel.find(classFilter)
+            .select("_id className section classTeacherId strength status")
+            .sort({ className: 1, section: 1 })
+            .lean();
+
+        const classIds = classes.map((cls) => cls._id);
+
+        const [studentCounts, attendanceSheets] = await Promise.all([
+            classIds.length
+                ? Student.aggregate([
+                      {
+                          $match: {
+                              schoolId: new mongoose.Types.ObjectId(schoolId),
+                              grade: { $in: classIds },
+                              status: "ACTIVE",
+                          },
+                      },
+                      {
+                          $group: {
+                              _id: "$grade",
+                              count: { $sum: 1 },
+                          },
+                      },
+                  ])
+                : Promise.resolve([]),
+            classIds.length
+                ? Attendance.find({
+                      schoolId,
+                      type: "STUDENT",
+                      date: attendanceDate,
+                      classId: { $in: classIds },
+                  })
+                      .select("classId records.status")
+                      .lean()
+                : Promise.resolve([]),
+        ]);
+
+        const strengthByClassId = new Map(
+            studentCounts.map((row) => [String(row._id), row.count])
+        );
+        const sheetByClassId = new Map(
+            attendanceSheets.map((sheet) => [String(sheet.classId), sheet])
+        );
+
+        const data = classes.map((cls) => {
+            const sheet = sheetByClassId.get(String(cls._id));
+            const summary = summarizeRecords(sheet?.records || []);
+            const totalStudents = strengthByClassId.get(String(cls._id)) || 0;
+            return {
+                _id: cls._id,
+                className: cls.className,
+                section: cls.section,
+                classTeacherId: cls.classTeacherId || null,
+                status: cls.status,
+                totalStudents,
+                isMarked: Boolean(sheet),
+                markedCount: sheet?.records?.length || 0,
+                summary,
+            };
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Assigned classes fetched for student attendance.",
+            date: attendanceDate,
+            totalClasses: data.length,
+            data,
+        });
+    } catch (error) {
+        console.error("getAssignedClassesForAttendance Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+        });
+    }
+};
+
+const getStudentsForAttendance = async (req, res) => {
+    try {
+        const { schoolId, classId, date, teacherId } = req.body;
+
+        if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid schoolId is required.",
+            });
+        }
+
+        const access = await assertStudentClassAccess({
+            schoolId,
+            classId,
+            actorId: teacherId,
+        });
+        if (!access.ok) {
+            return res.status(access.status).json({
+                success: false,
+                message: access.message,
+            });
+        }
+
+        const classInfo = access.classDoc;
+        const attendanceDate = parseLocalDate(date) || parseLocalDate(new Date());
+
+        const [students, existing] = await Promise.all([
             Student.find({ schoolId, grade: classId, status: "ACTIVE" })
-                .select("firstName lastName admissionNumber rollNumber")
+                .select("firstName lastName admissionNumber rollNumber email")
                 .sort({ firstName: 1, lastName: 1 })
                 .lean(),
             Attendance.findOne({
@@ -241,13 +404,6 @@ const getStudentsForAttendance = async (req, res) => {
                 .select("records.status records.personId records.remarks")
                 .lean(),
         ]);
-
-        if (!classInfo) {
-            return res.status(404).json({
-                success: false,
-                message: "Class not found.",
-            });
-        }
 
         const statusMap = new Map(
             (existing?.records || []).map((r) => [String(r.personId), r])
@@ -261,6 +417,7 @@ const getStudentsForAttendance = async (req, res) => {
                 lastName: student.lastName,
                 admissionNumber: student.admissionNumber,
                 rollNumber: student.rollNumber,
+                email: student.email || "",
                 attendanceStatus: marked?.status || null,
                 remarks: marked?.remarks || "",
             };
@@ -274,7 +431,13 @@ const getStudentsForAttendance = async (req, res) => {
             isMarked: Boolean(existing),
             summary: summarizeRecords(existing?.records || []),
             data: {
-                class: classInfo,
+                class: {
+                    _id: classInfo._id,
+                    className: classInfo.className,
+                    section: classInfo.section,
+                    status: classInfo.status,
+                    classTeacherId: classInfo.classTeacherId || null,
+                },
                 students: data,
             },
         });
@@ -331,6 +494,20 @@ const markAttendance = async (req, res) => {
                 return res.status(400).json({
                     success: false,
                     message: `Invalid ${id.field}.`,
+                });
+            }
+        }
+
+        if (type === "STUDENT") {
+            const access = await assertStudentClassAccess({
+                schoolId,
+                classId,
+                actorId: markedBy,
+            });
+            if (!access.ok) {
+                return res.status(access.status).json({
+                    success: false,
+                    message: access.message,
                 });
             }
         }
@@ -467,6 +644,36 @@ const bulkUploadAttendance = async (req, res) => {
                 success: false,
                 message: "Upload rows are required.",
             });
+        }
+
+        if (
+            !mongoose.Types.ObjectId.isValid(schoolId) ||
+            !mongoose.Types.ObjectId.isValid(markedBy)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId or markedBy.",
+            });
+        }
+
+        if (type === "STUDENT") {
+            if (!mongoose.Types.ObjectId.isValid(classId)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid classId.",
+                });
+            }
+            const access = await assertStudentClassAccess({
+                schoolId,
+                classId,
+                actorId: markedBy,
+            });
+            if (!access.ok) {
+                return res.status(access.status).json({
+                    success: false,
+                    message: access.message,
+                });
+            }
         }
 
         const attendanceDate = parseLocalDate(date);
@@ -897,6 +1104,7 @@ const getAttendanceLogDetail = async (req, res) => {
 };
 
 module.exports = {
+    getAssignedClassesForAttendance,
     getTeachersForAttendance,
     getStudentsForAttendance,
     markAttendance,

@@ -1,5 +1,6 @@
 const express = require("express");
 const {
+    getAssignedClassesForAttendance,
     getTeachersForAttendance,
     getStudentsForAttendance,
     markAttendance,
@@ -11,6 +12,7 @@ const {
 
 const router = express.Router();
 
+router.post("/getAssignedClassesForAttendance", getAssignedClassesForAttendance);
 router.post("/getTeachersForAttendance", getTeachersForAttendance);
 router.post("/getStudentsForAttendance", getStudentsForAttendance);
 router.post("/markAttendance", markAttendance);
