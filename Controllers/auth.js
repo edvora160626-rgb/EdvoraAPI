@@ -5,7 +5,16 @@ const School = require("../models/School");
 const Student = require("../models/Student");
 const Department = require("../models/Departments.model");
 const generateToken = require("../utils/generateJwt");
-const { getModelByRole, findUserAcrossModels, roleModelMap } = require("../utils/roleModelMap");
+const {
+    getModelByRole,
+    findUserAcrossModels,
+    findExamCandidate,
+    roleModelMap,
+    ExamCandidate,
+    EXAM_ROLE,
+    EXAM_USER_ROLES,
+    isExamPortalRole,
+} = require("../utils/roleModelMap");
 const { generateStaffEmployeeId } = require("../utils/generateStaffId");
 
 const normalizePhoneCode = (value) =>
@@ -484,7 +493,11 @@ const registerSchool = async (req, res) => {
 
 const login = async (req, res) => {
     try {
-        const { emailid, password } = req.body;
+        const { emailid, password, portalMode } = req.body;
+        const portal =
+            String(portalMode || "school").toLowerCase() === "examination"
+                ? "examination"
+                : "school";
 
         if (!emailid || !password) {
             return res.status(400).json({
@@ -493,19 +506,40 @@ const login = async (req, res) => {
             });
         }
 
-        // Role is unknown at login time — search across all collections
-        const result = await findUserAcrossModels({
-            email: emailid.trim().toLowerCase(),
-        });
+        const email = emailid.trim().toLowerCase();
+
+        // Strict portal isolation: school users ≠ exam candidates
+        const result =
+            portal === "examination"
+                ? await findExamCandidate({ email })
+                : await findUserAcrossModels({ email });
 
         if (!result) {
             return res.status(404).json({
                 success: false,
-                message: "User not found",
+                message:
+                    portal === "examination"
+                        ? "No examination account found for this email. Create an examination account to continue."
+                        : "User not found",
             });
         }
 
         const { user } = result;
+
+        if (portal === "examination" && !isExamPortalRole(user.role)) {
+            return res.status(403).json({
+                success: false,
+                message: "This account cannot access the Examination portal.",
+            });
+        }
+
+        if (portal === "school" && isExamPortalRole(user.role)) {
+            return res.status(403).json({
+                success: false,
+                message:
+                    "This account cannot access the School portal. Switch to Examination.",
+            });
+        }
 
         if (user.status !== "ACTIVE") {
             return res.status(403).json({
@@ -525,14 +559,11 @@ const login = async (req, res) => {
             return res.status(200).json({
                 success: true,
                 message: "Verified successful",
-                isFirstLogin: "Y"
+                isFirstLogin: "Y",
             });
         }
 
-        const isPasswordValid = await bcrypt.compare(
-            password,
-            user.password
-        );
+        const isPasswordValid = await bcrypt.compare(password, user.password);
 
         if (!isPasswordValid) {
             return res.status(401).json({
@@ -558,6 +589,7 @@ const login = async (req, res) => {
             message: "Login successful",
             token,
             user: userData,
+            portalMode: portal,
         });
     } catch (error) {
         console.error("Login Error:", error);
@@ -565,9 +597,124 @@ const login = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Internal Server Error",
-            error: process.env.NODE_ENV === "development"
-                ? error.message
-                : "Something went wrong",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+const registerExamCandidate = async (req, res) => {
+    try {
+        const {
+            firstName,
+            lastName,
+            email,
+            phone,
+            phonecode,
+            password,
+            gender,
+            userType,
+        } = req.body;
+
+        const normalizedPhoneCode = normalizePhoneCode(phonecode);
+
+        if (!firstName || !email || !phone || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "First name, email, phone and password are required.",
+            });
+        }
+
+        if (String(password).length < 8) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must contain at least 8 characters.",
+            });
+        }
+
+        const typeMap = {
+            ADMIN: "EXAM_ADMIN",
+            CANDIDATE: "EXAM_CANDIDATE",
+            PROCTOR: "EXAM_PROCTOR",
+            EXAM_ADMIN: "EXAM_ADMIN",
+            EXAM_CANDIDATE: "EXAM_CANDIDATE",
+            EXAM_PROCTOR: "EXAM_PROCTOR",
+        };
+        const rawType = String(userType || "CANDIDATE").toUpperCase();
+        const role = typeMap[rawType];
+        if (!role || !EXAM_USER_ROLES.includes(role)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid account type. Choose Admin, Candidate or Proctor.",
+            });
+        }
+
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const normalizedPhone = String(phone).trim();
+
+        const existing = await ExamCandidate.findOne({
+            $or: [
+                { email: normalizedEmail },
+                { phone: normalizedPhone, phoneCode: normalizedPhoneCode },
+            ],
+        }).lean();
+
+        if (existing) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    "An examination account already exists with this email or phone.",
+            });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const candidate = await ExamCandidate.create({
+            firstName: String(firstName).trim(),
+            lastName: String(lastName || "").trim(),
+            email: normalizedEmail,
+            phone: normalizedPhone,
+            phoneCode: normalizedPhoneCode,
+            password: hashedPassword,
+            gender: gender || "",
+            role,
+            status: "ACTIVE",
+        });
+
+        const userData = candidate.toObject();
+        delete userData.password;
+
+        const labels = {
+            EXAM_ADMIN: "Admin",
+            EXAM_CANDIDATE: "Candidate",
+            EXAM_PROCTOR: "Proctor",
+        };
+
+        return res.status(201).json({
+            success: true,
+            message: `${labels[role]} account created successfully. You can sign in now.`,
+            user: userData,
+        });
+    } catch (error) {
+        console.error("registerExamCandidate Error:", error);
+
+        if (error?.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    "An examination account already exists with this email or phone.",
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
         });
     }
 };
@@ -1337,6 +1484,7 @@ module.exports = {
     getAllSchools,
     register,
     login,
+    registerExamCandidate,
     registerSchool,
     acceptOrRejectRequest,
     pendingRequests,

@@ -3,6 +3,7 @@ const {
     registerSchool,
     login,
     register,
+    registerExamCandidate,
     pendingRequests,
     acceptOrRejectRequest,
     verifyForgotOtp,
@@ -16,6 +17,7 @@ const router = express.Router();
 
 router.post("/registerSchool", registerSchool);
 router.post("/register", register);
+router.post("/registerExamCandidate", registerExamCandidate);
 router.post("/login", login);
 router.post("/pendingRequests", pendingRequests);
 router.post("/acceptOrRejectRequest", acceptOrRejectRequest);
