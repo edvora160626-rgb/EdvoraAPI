@@ -2,9 +2,75 @@ const mongoose = require("mongoose");
 const ClassesModel = require("../models/Classes.model");
 const Student = require("../models/Student");
 const Teacher = require("../models/Teacher");
+const Timetable = require("../models/Timetable.model");
+const Subject = require("../models/Subjects.model");
+const SubjectAllocation = require("../models/SubjectAllocation.model");
+const Attendance = require("../models/Attendance.model");
+const AttendanceLog = require("../models/AttendanceLog.model");
+const EventProgram = require("../models/EventProgram.model");
 const {
     ensureTeachersHaveStaffIds,
 } = require("../utils/generateStaffId");
+
+async function getClassRelatedUsage(classId) {
+    const id = new mongoose.Types.ObjectId(classId);
+
+    const [
+        students,
+        attendance,
+        attendanceLogs,
+        timetables,
+        subjects,
+        subjectAllocations,
+        eventPrograms,
+    ] = await Promise.all([
+        Student.countDocuments({ grade: id }),
+        Attendance.countDocuments({ classId: id }),
+        AttendanceLog.countDocuments({ classId: id }),
+        Timetable.countDocuments({ classId: id }),
+        Subject.countDocuments({ classId: id }),
+        SubjectAllocation.countDocuments({ classId: id }),
+        EventProgram.countDocuments({ eligibleClasses: id }),
+    ]);
+
+    const usage = {
+        students,
+        attendance,
+        attendanceLogs,
+        timetables,
+        subjects,
+        subjectAllocations,
+        eventPrograms,
+    };
+
+    const blockers = Object.entries(usage)
+        .filter(([, count]) => count > 0)
+        .map(([key, count]) => ({ module: key, count }));
+
+    return {
+        usage,
+        blockers,
+        hasRelatedData: blockers.length > 0,
+    };
+}
+
+function formatRelatedBlockMessage(action, blockers) {
+    const labels = {
+        students: "students",
+        attendance: "attendance records",
+        attendanceLogs: "attendance logs",
+        timetables: "timetable entries",
+        subjects: "subjects",
+        subjectAllocations: "subject allocations",
+        eventPrograms: "event programs",
+    };
+
+    const parts = blockers.map(
+        ({ module, count }) => `${count} ${labels[module] || module}`
+    );
+
+    return `Cannot ${action} this class because related data exists (${parts.join(", ")}).`;
+}
 
 const addClasses = async (req, res) => {
     try {
@@ -16,7 +82,6 @@ const addClasses = async (req, res) => {
             createdBy,
         } = req.body;
 
-        // Validate required fields
         if (!schoolId || !className || !section) {
             return res.status(400).json({
                 success: false,
@@ -24,7 +89,6 @@ const addClasses = async (req, res) => {
             });
         }
 
-        // Check if class already exists
         const existingClass = await ClassesModel.findOne({
             schoolId,
             className: className.trim(),
@@ -38,7 +102,6 @@ const addClasses = async (req, res) => {
             });
         }
 
-        // Create class
         const newClass = await ClassesModel.create({
             schoolId,
             className: className.trim(),
@@ -53,17 +116,261 @@ const addClasses = async (req, res) => {
             message: "Class created successfully.",
             data: newClass,
         });
-
     } catch (error) {
         console.error("addClasses Error:", error);
 
-        // Handle duplicate index error
         if (error.code === 11000) {
             return res.status(409).json({
                 success: false,
                 message: "Class already exists.",
             });
         }
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+const updateClass = async (req, res) => {
+    try {
+        const { classId, schoolId, className, section, updatedBy } = req.body;
+
+        if (!classId || !className || !section) {
+            return res.status(400).json({
+                success: false,
+                message: "classId, className and section are required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid classId.",
+            });
+        }
+
+        if (schoolId && !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const classQuery = { _id: classId };
+        if (schoolId) classQuery.schoolId = schoolId;
+
+        const classDoc = await ClassesModel.findOne(classQuery).lean();
+        if (!classDoc) {
+            return res.status(404).json({
+                success: false,
+                message: "Class not found.",
+            });
+        }
+
+        const nextName = className.trim();
+        const nextSection = section.trim().toUpperCase();
+
+        const duplicate = await ClassesModel.findOne({
+            schoolId: classDoc.schoolId,
+            className: nextName,
+            section: nextSection,
+            _id: { $ne: classDoc._id },
+        }).lean();
+
+        if (duplicate) {
+            return res.status(409).json({
+                success: false,
+                message: "Another class with this name and section already exists.",
+            });
+        }
+
+        const updated = await ClassesModel.findByIdAndUpdate(
+            classDoc._id,
+            {
+                className: nextName,
+                section: nextSection,
+                ...(updatedBy ? { updatedBy } : {}),
+            },
+            { new: true }
+        )
+            .select("_id className section classTeacherId strength status")
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            message: "Class updated successfully.",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("updateClass Error:", error);
+
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: "Another class with this name and section already exists.",
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+const updateClassStatus = async (req, res) => {
+    try {
+        const { classId, schoolId, status, updatedBy } = req.body;
+        const nextStatus = String(status || "").toUpperCase();
+
+        if (!classId || !["ACTIVE", "INACTIVE"].includes(nextStatus)) {
+            return res.status(400).json({
+                success: false,
+                message: "classId and a valid status (ACTIVE or INACTIVE) are required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid classId.",
+            });
+        }
+
+        if (schoolId && !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const classQuery = { _id: classId };
+        if (schoolId) classQuery.schoolId = schoolId;
+
+        const classDoc = await ClassesModel.findOne(classQuery).lean();
+        if (!classDoc) {
+            return res.status(404).json({
+                success: false,
+                message: "Class not found.",
+            });
+        }
+
+        if (classDoc.status === nextStatus) {
+            return res.status(200).json({
+                success: true,
+                message: `Class is already ${nextStatus.toLowerCase()}.`,
+                data: classDoc,
+            });
+        }
+
+        if (nextStatus === "INACTIVE") {
+            const related = await getClassRelatedUsage(classDoc._id);
+            if (related.hasRelatedData) {
+                return res.status(409).json({
+                    success: false,
+                    message: formatRelatedBlockMessage("deactivate", related.blockers),
+                    data: related.usage,
+                });
+            }
+        }
+
+        const updated = await ClassesModel.findByIdAndUpdate(
+            classDoc._id,
+            {
+                status: nextStatus,
+                ...(updatedBy ? { updatedBy } : {}),
+            },
+            { new: true }
+        )
+            .select("_id className section classTeacherId strength status")
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            message:
+                nextStatus === "INACTIVE"
+                    ? "Class marked as inactive."
+                    : "Class marked as active.",
+            data: updated,
+        });
+    } catch (error) {
+        console.error("updateClassStatus Error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : "Something went wrong",
+        });
+    }
+};
+
+const deleteClass = async (req, res) => {
+    try {
+        const { classId, schoolId } = req.body;
+
+        if (!classId) {
+            return res.status(400).json({
+                success: false,
+                message: "classId is required.",
+            });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(classId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid classId.",
+            });
+        }
+
+        if (schoolId && !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid schoolId.",
+            });
+        }
+
+        const classQuery = { _id: classId };
+        if (schoolId) classQuery.schoolId = schoolId;
+
+        const classDoc = await ClassesModel.findOne(classQuery).lean();
+        if (!classDoc) {
+            return res.status(404).json({
+                success: false,
+                message: "Class not found.",
+            });
+        }
+
+        const related = await getClassRelatedUsage(classDoc._id);
+        if (related.hasRelatedData) {
+            return res.status(409).json({
+                success: false,
+                message: formatRelatedBlockMessage("delete", related.blockers),
+                data: related.usage,
+            });
+        }
+
+        await ClassesModel.findByIdAndDelete(classDoc._id);
+
+        return res.status(200).json({
+            success: true,
+            message: "Class deleted successfully.",
+            data: { _id: classDoc._id },
+        });
+    } catch (error) {
+        console.error("deleteClass Error:", error);
 
         return res.status(500).json({
             success: false,
@@ -179,7 +486,6 @@ const getActiveClassesBySchool = async (req, res) => {
             status: filterStatus,
             data,
         });
-
     } catch (error) {
         console.error("getActiveClassesBySchool Error:", error);
 
@@ -427,6 +733,9 @@ const assignStaffToClass = async (req, res) => {
 
 module.exports = {
     addClasses,
+    updateClass,
+    updateClassStatus,
+    deleteClass,
     getActiveClassesBySchool,
     getStudentsByClass,
     getActiveStaffBySchool,

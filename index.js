@@ -31,6 +31,7 @@ app.get("/", (req, res) => {
 const schoolRoutes = require("./routes/auth.routes");
 const departmentRoutes = require("./routes/department.routes");
 const classesRoutes = require("./routes/classes.routes");
+const subjectsRoutes = require("./routes/subjects.routes");
 const attendanceRoutes = require("./routes/attendance.routes");
 const eventsRoutes = require("./routes/events.routes");
 const timetableRoutes = require("./routes/timetable.routes");
@@ -39,6 +40,7 @@ const examRoutes = require("./routes/exam.routes");
 app.use("/auth", schoolRoutes);
 app.use("/department", departmentRoutes);
 app.use("/class", classesRoutes);
+app.use("/subject", subjectsRoutes);
 app.use("/attendance", attendanceRoutes);
 app.use("/events", eventsRoutes);
 app.use("/timetable", timetableRoutes);
@@ -48,8 +50,14 @@ app.use("/exam", examRoutes);
 // Database Connection
 mongoose
     .connect(process.env.MONGO_URI)
-    .then(() => {
+    .then(async () => {
         console.log("✅ MongoDB Connected");
+        try {
+            const Subject = require("./models/Subjects.model");
+            await Subject.syncIndexes();
+        } catch (err) {
+            console.warn("Subject index sync:", err.message);
+        }
     })
     .catch((error) => {
         console.log("❌ MongoDB Connection Failed");

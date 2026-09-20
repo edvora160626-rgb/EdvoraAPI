@@ -12,12 +12,30 @@ const Subject = require("../models/Subjects.model");
 const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
 const Parent = require("../models/Parent");
+const { generateUniqueCode } = require("../utils/generateUniqueCode");
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const SLOT_TYPES = ["PERIOD", "BREAK", "LUNCH"];
 const ROOM_TYPES = ["CLASSROOM", "LAB", "LIBRARY", "AUDITORIUM", "OTHER"];
 
 const isValidId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+/** Normalize slot day list. Empty = all days (legacy). */
+const normalizeSlotDays = (days) => {
+  if (!Array.isArray(days) || days.length === 0) return [];
+  const unique = [...new Set(days.map((d) => String(d).toUpperCase()))];
+  const invalid = unique.filter((d) => !DAYS.includes(d));
+  if (invalid.length) {
+    return { error: `Invalid day(s): ${invalid.join(", ")}` };
+  }
+  return unique.sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
+};
+
+const slotAppliesToDay = (slot, day) => {
+  const days = slot?.days;
+  if (!Array.isArray(days) || days.length === 0) return true;
+  return days.includes(day);
+};
 
 const parseDate = (value) => {
   if (!value) return null;
@@ -603,6 +621,7 @@ const createTimeSlot = async (req, res) => {
       startTime,
       endTime,
       type,
+      days,
       createdBy,
     } = req.body;
     if (!requireSchoolId(schoolId, res)) return;
@@ -619,6 +638,14 @@ const createTimeSlot = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Invalid slot type.",
+      });
+    }
+
+    const normalizedDays = normalizeSlotDays(days);
+    if (normalizedDays?.error) {
+      return res.status(400).json({
+        success: false,
+        message: normalizedDays.error,
       });
     }
 
@@ -639,6 +666,7 @@ const createTimeSlot = async (req, res) => {
       startTime: startTime.trim(),
       endTime: endTime.trim(),
       type: slotType,
+      days: normalizedDays,
       createdBy: createdBy || null,
     });
 
@@ -662,6 +690,7 @@ const updateTimeSlot = async (req, res) => {
       startTime,
       endTime,
       type,
+      days,
       updatedBy,
     } = req.body;
     if (!requireSchoolId(schoolId, res)) return;
@@ -692,6 +721,16 @@ const updateTimeSlot = async (req, res) => {
         });
       }
       slot.type = type;
+    }
+    if (days !== undefined) {
+      const normalizedDays = normalizeSlotDays(days);
+      if (normalizedDays?.error) {
+        return res.status(400).json({
+          success: false,
+          message: normalizedDays.error,
+        });
+      }
+      slot.days = normalizedDays;
     }
     slot.updatedBy = updatedBy || null;
     await slot.save();
@@ -756,16 +795,28 @@ const replaceTimeSlots = async (req, res) => {
 
     await TimeSlot.deleteMany({ schoolId, academicYearId });
 
-    const docs = slots.map((s, index) => ({
-      schoolId,
-      academicYearId,
-      name: String(s.name || `Period ${index + 1}`).trim(),
-      order: s.order ?? index,
-      startTime: String(s.startTime || "").trim(),
-      endTime: String(s.endTime || "").trim(),
-      type: SLOT_TYPES.includes(s.type) ? s.type : "PERIOD",
-      createdBy: createdBy || null,
-    }));
+    const docs = [];
+    for (let index = 0; index < slots.length; index += 1) {
+      const s = slots[index];
+      const normalizedDays = normalizeSlotDays(s.days);
+      if (normalizedDays?.error) {
+        return res.status(400).json({
+          success: false,
+          message: `${normalizedDays.error} (slot ${index + 1})`,
+        });
+      }
+      docs.push({
+        schoolId,
+        academicYearId,
+        name: String(s.name || `Period ${index + 1}`).trim(),
+        order: s.order ?? index,
+        startTime: String(s.startTime || "").trim(),
+        endTime: String(s.endTime || "").trim(),
+        type: SLOT_TYPES.includes(s.type) ? s.type : "PERIOD",
+        days: normalizedDays,
+        createdBy: createdBy || null,
+      });
+    }
 
     const created = await TimeSlot.insertMany(docs);
 
@@ -903,12 +954,12 @@ const listRooms = async (req, res) => {
 
 const createRoom = async (req, res) => {
   try {
-    const { schoolId, name, code, type, capacity, createdBy } = req.body;
+    const { schoolId, name, type, capacity, createdBy } = req.body;
     if (!requireSchoolId(schoolId, res)) return;
-    if (!name || !code) {
+    if (!name) {
       return res.status(400).json({
         success: false,
-        message: "name and code are required.",
+        message: "name is required.",
       });
     }
 
@@ -920,10 +971,17 @@ const createRoom = async (req, res) => {
       });
     }
 
+    const code = await generateUniqueCode({
+      Model: Room,
+      schoolId,
+      field: "code",
+      name,
+    });
+
     const room = await Room.create({
       schoolId,
       name: name.trim(),
-      code: code.trim().toUpperCase(),
+      code,
       type: roomType,
       capacity: capacity || 40,
       createdBy: createdBy || null,
@@ -966,7 +1024,7 @@ const updateRoom = async (req, res) => {
     }
 
     if (name !== undefined) room.name = name.trim();
-    if (code !== undefined) room.code = code.trim().toUpperCase();
+    // room.code is auto-generated and immutable
     if (type !== undefined) {
       if (!ROOM_TYPES.includes(type)) {
         return res.status(400).json({
@@ -1149,10 +1207,11 @@ const listSubjectsByClass = async (req, res) => {
       });
     }
 
+    const classObjectId = new mongoose.Types.ObjectId(classId);
     const subjects = await Subject.find({
       schoolId,
-      classId,
       status: "ACTIVE",
+      $or: [{ classIds: classObjectId }, { classId: classObjectId }],
     })
       .sort({ subjectName: 1 })
       .lean();
@@ -1359,16 +1418,28 @@ const getTimetableByClass = async (req, res) => {
 
     await getOrCreateTimetable(schoolId, academicYearId, classId);
 
+    const classObjectId = isValidId(classId)
+      ? new mongoose.Types.ObjectId(classId)
+      : classId;
+
     const tt = await populateTimetable(
       Timetable.findOne({ schoolId, academicYearId, classId })
     );
 
-    const [settings, slots, allocations] = await Promise.all([
+    const [settings, slots, allocations, subjects] = await Promise.all([
       TimetableSettings.findOne({ schoolId, academicYearId }).lean(),
       TimeSlot.find({ schoolId, academicYearId }).sort({ order: 1 }).lean(),
       SubjectAllocation.find({ schoolId, academicYearId, classId })
         .populate("subjectId", "subjectName subjectCode")
         .populate("teacherId", "firstName lastName staffId")
+        .lean(),
+      Subject.find({
+        schoolId,
+        status: "ACTIVE",
+        $or: [{ classIds: classObjectId }, { classId: classObjectId }],
+      })
+        .sort({ subjectName: 1 })
+        .select("_id subjectName subjectCode")
         .lean(),
     ]);
 
@@ -1381,6 +1452,7 @@ const getTimetableByClass = async (req, res) => {
         },
         slots,
         allocations,
+        subjects,
       },
     });
   } catch (error) {
@@ -1428,6 +1500,12 @@ const upsertTimetableEntry = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Cannot assign subjects to break/lunch slots.",
+      });
+    }
+    if (!slotAppliesToDay(slot, day)) {
+      return res.status(400).json({
+        success: false,
+        message: "This period does not apply on the selected day.",
       });
     }
 

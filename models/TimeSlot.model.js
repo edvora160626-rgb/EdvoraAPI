@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+
 const timeSlotSchema = new mongoose.Schema(
   {
     schoolId: {
@@ -38,6 +40,16 @@ const timeSlotSchema = new mongoose.Schema(
       type: String,
       enum: ["PERIOD", "BREAK", "LUNCH"],
       default: "PERIOD",
+    },
+    /** Empty / missing = applies to every working day (legacy slots). */
+    days: {
+      type: [
+        {
+          type: String,
+          enum: DAYS,
+        },
+      ],
+      default: [],
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

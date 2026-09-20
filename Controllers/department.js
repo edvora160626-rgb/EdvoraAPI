@@ -2,13 +2,13 @@ const mongoose = require("mongoose");
 const Department = require("../models/Departments.model");
 const Teacher = require("../models/Teacher");
 const School = require("../models/School");
+const { generateUniqueCode } = require("../utils/generateUniqueCode");
 
 const createDepartment = async (req, res) => {
     try {
         const {
             schoolId,
             departmentName,
-            departmentCode,
             departmentHead,
             description,
             email,
@@ -28,7 +28,7 @@ const createDepartment = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message:
-                    "schoolId, departmentName, departmentCode and createdBy are required.",
+                    "schoolId, departmentName and createdBy are required.",
             });
         }
 
@@ -123,10 +123,17 @@ const createDepartment = async (req, res) => {
             }
         }
 
+        const departmentCode = await generateUniqueCode({
+            Model: Department,
+            schoolId,
+            field: "departmentCode",
+            name: departmentName,
+        });
+
         const department = await Department.create({
             schoolId,
             departmentName: departmentName.trim(),
-            departmentCode: departmentCode.trim().toUpperCase(),
+            departmentCode,
             departmentHead: departmentHead || null,
             description: description?.trim() || "",
             email: email?.trim().toLowerCase() || "",
@@ -234,13 +241,19 @@ const teachersToDepartment = async (req, res) => {
         const existingIds = new Set(
             (department.teacherids || []).map((id) => String(id))
         );
-        const deptName = (department.departmentName || "").trim().toLowerCase();
+        const departmentObjectId = new mongoose.Types.ObjectId(departmentId);
 
         const alreadyAssigned = teachers.filter((teacher) => {
-            const byId = existingIds.has(String(teacher._id));
-            const byName =
-                (teacher.department || "").trim().toLowerCase() === deptName;
-            return byId || byName;
+            const byDeptList = existingIds.has(String(teacher._id));
+            const teacherDepts = Array.isArray(teacher.department)
+                ? teacher.department
+                : teacher.department
+                  ? [teacher.department]
+                  : [];
+            const byTeacherDept = teacherDepts.some(
+                (id) => String(id) === String(departmentId)
+            );
+            return byDeptList || byTeacherDept;
         });
 
         if (alreadyAssigned.length > 0) {
@@ -259,19 +272,25 @@ const teachersToDepartment = async (req, res) => {
             });
         }
 
-        // Add to department.teacherids only — do not change Teacher.department
-        // so the staff member remains in their existing department as well.
-        const updated = await Department.findByIdAndUpdate(
-            departmentId,
-            {
-                $addToSet: {
-                    teacherids: { $each: teacherIds },
+        // Keep Department.teacherids and Teacher.department in sync so staff
+        // appear in getTeachersByDepartment while retaining other departments.
+        const [updated] = await Promise.all([
+            Department.findByIdAndUpdate(
+                departmentId,
+                {
+                    $addToSet: {
+                        teacherids: { $each: teacherIds },
+                    },
                 },
-            },
-            { new: true }
-        )
-            .select("departmentName teacherids")
-            .lean();
+                { new: true }
+            )
+                .select("departmentName teacherids")
+                .lean(),
+            Teacher.updateMany(
+                { _id: { $in: teacherIds } },
+                { $addToSet: { department: departmentObjectId } }
+            ),
+        ]);
 
         return res.status(200).json({
             success: true,

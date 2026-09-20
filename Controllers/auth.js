@@ -195,7 +195,7 @@ const register = async (req, res) => {
                 message: "Required fields are missing."
             });
         }
-        console.log("HERE1")
+        console.log("HERE11")
 
         const allowedRoles = [
             "SUPER_ADMIN",
@@ -204,7 +204,6 @@ const register = async (req, res) => {
             "STUDENT",
             "PARENT"
         ];
-
         if (!allowedRoles.includes(role)) {
             return res.status(400).json({
                 success: false,
@@ -275,8 +274,10 @@ const register = async (req, res) => {
                 break;
         }
 
+
         // Resolve the correct model for this role
         const Model = getModelByRole(role);
+        console.log("HERE22")
 
         const existingUser = await Model.findOne({
             $or: [
@@ -336,7 +337,6 @@ const register = async (req, res) => {
                 subjects,
             });
         }
-
         if (role === "SCHOOL_ADMIN") {
             try {
                 userData.employeeId = await generateStaffEmployeeId(schoolId);
@@ -375,7 +375,7 @@ const register = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Register Error:", error);
+        console.log("Register Error:", error);
 
         if (error?.code === 11000) {
             const field = Object.keys(error.keyPattern || {})[0] || "field";
@@ -1039,6 +1039,20 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
         }
 
         if (role === "TEACHER") {
+            const departmentIds = (Array.isArray(department)
+                ? department
+                : department
+                  ? [department]
+                  : []
+            ).filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+            if (departmentIds.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "At least one valid Department is required.",
+                });
+            }
+
             let autoStaffId;
             try {
                 autoStaffId = await generateStaffEmployeeId(schoolId);
@@ -1049,11 +1063,23 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 });
             }
 
+            const normalizedSubjects = Array.isArray(subjects)
+                ? subjects.map((s) => String(s).trim()).filter(Boolean)
+                : typeof subjects === "string" && subjects.trim()
+                  ? subjects
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                  : [];
+
             userData.staffId = autoStaffId;
             userData.employeeId = autoStaffId;
-            userData.department = department;
+            userData.department = departmentIds.map(
+                (id) => new mongoose.Types.ObjectId(id)
+            );
             userData.qualification = qualification;
-            userData.subjects = subjects;
+            userData.subjects = normalizedSubjects;
+            userData.status = "ACTIVE";
         }
 
         if (role === "SCHOOL_ADMIN") {
@@ -1074,6 +1100,13 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
 
         const user = await Model.create(userData);
 
+        if (role === "TEACHER" && Array.isArray(userData.department)) {
+            await Department.updateMany(
+                { _id: { $in: userData.department } },
+                { $addToSet: { teacherids: user._id } }
+            );
+        }
+
         // await sendOTPEmail(user.email, user.firstName, otp);
 
         return res.status(201).json({
@@ -1082,7 +1115,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             data: {
                 id: user._id,
                 role: user.role,
-                email: user.email
+                email: user.email,
+                status: user.status,
             }
         });
 
