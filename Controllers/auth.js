@@ -637,17 +637,15 @@ const registerExamCandidate = async (req, res) => {
         const typeMap = {
             ADMIN: "EXAM_ADMIN",
             CANDIDATE: "EXAM_CANDIDATE",
-            PROCTOR: "EXAM_PROCTOR",
             EXAM_ADMIN: "EXAM_ADMIN",
             EXAM_CANDIDATE: "EXAM_CANDIDATE",
-            EXAM_PROCTOR: "EXAM_PROCTOR",
         };
         const rawType = String(userType || "CANDIDATE").toUpperCase();
         const role = typeMap[rawType];
         if (!role || !EXAM_USER_ROLES.includes(role)) {
             return res.status(400).json({
                 success: false,
-                message: "Invalid account type. Choose Admin, Candidate or Proctor.",
+                message: "Invalid account type. Choose Admin or Candidate.",
             });
         }
 
@@ -689,7 +687,6 @@ const registerExamCandidate = async (req, res) => {
         const labels = {
             EXAM_ADMIN: "Admin",
             EXAM_CANDIDATE: "Candidate",
-            EXAM_PROCTOR: "Proctor",
         };
 
         return res.status(201).json({

@@ -17,11 +17,7 @@ const roleModelMap = {
 };
 
 const SCHOOL_ROLES = Object.keys(roleModelMap);
-const EXAM_USER_ROLES = [
-  "EXAM_ADMIN",
-  "EXAM_CANDIDATE",
-  "EXAM_PROCTOR",
-];
+const EXAM_USER_ROLES = ["EXAM_ADMIN", "EXAM_CANDIDATE"];
 /** @deprecated use EXAM_USER_ROLES — kept for older callers */
 const EXAM_ROLE = "EXAM_CANDIDATE";
 

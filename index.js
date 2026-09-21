@@ -10,7 +10,7 @@ const app = express();
 app.use(
   cors({
     origin: [
-      "http://localhost:5173",
+      "http://localhost:5175",
       "https://edvora-eront.vercel.app",
       "https://edvora-front.vercel.app",
       "https://edvora-eront-gm2kegov3-edvora2.vercel.app",
@@ -46,7 +46,7 @@ app.use("/events", eventsRoutes);
 app.use("/timetable", timetableRoutes);
 app.use("/exam", examRoutes);
 
-
+console.log(process.env.MONGO_URI);
 // Database Connection
 mongoose
     .connect(process.env.MONGO_URI)

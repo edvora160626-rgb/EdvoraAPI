@@ -863,14 +863,13 @@ const precheck = async (req, res) => {
 const getStaffOverview = async (req, res) => {
   try {
     const role = req.examUser.role;
-    if (!["EXAM_ADMIN", "EXAM_PROCTOR"].includes(role)) {
-      return res.status(403).json({ success: false, message: "Staff only" });
+    if (role !== "EXAM_ADMIN") {
+      return res.status(403).json({ success: false, message: "Admin only" });
     }
 
     const [
       candidates,
       admins,
-      proctors,
       tests,
       questions,
       liveAttempts,
@@ -880,7 +879,6 @@ const getStaffOverview = async (req, res) => {
     ] = await Promise.all([
       ExamCandidate.countDocuments({ role: "EXAM_CANDIDATE", status: "ACTIVE" }),
       ExamCandidate.countDocuments({ role: "EXAM_ADMIN", status: "ACTIVE" }),
-      ExamCandidate.countDocuments({ role: "EXAM_PROCTOR", status: "ACTIVE" }),
       ExamTest.countDocuments({ status: "PUBLISHED" }),
       ExamQuestion.countDocuments({ status: "ACTIVE" }),
       ExamAttempt.countDocuments({ status: "IN_PROGRESS" }),
@@ -896,7 +894,6 @@ const getStaffOverview = async (req, res) => {
         stats: {
           candidates,
           admins,
-          proctors,
           tests,
           questions,
           liveAttempts,
@@ -919,8 +916,10 @@ const listExamUsers = async (req, res) => {
     }
     const roleFilter = String(req.query.role || "").toUpperCase();
     const filter = {};
-    if (["EXAM_ADMIN", "EXAM_CANDIDATE", "EXAM_PROCTOR"].includes(roleFilter)) {
+    if (["EXAM_ADMIN", "EXAM_CANDIDATE"].includes(roleFilter)) {
       filter.role = roleFilter;
+    } else {
+      filter.role = { $in: ["EXAM_ADMIN", "EXAM_CANDIDATE"] };
     }
     const users = await ExamCandidate.find(filter)
       .select("-password -forgotOtp")
@@ -1383,8 +1382,8 @@ const createSubjectAdmin = async (req, res) => {
 
 const listLiveSessions = async (req, res) => {
   try {
-    if (!["EXAM_ADMIN", "EXAM_PROCTOR"].includes(req.examUser.role)) {
-      return res.status(403).json({ success: false, message: "Staff only" });
+    if (req.examUser.role !== "EXAM_ADMIN") {
+      return res.status(403).json({ success: false, message: "Admin only" });
     }
 
     const sessions = await ExamAttempt.find({ status: "IN_PROGRESS" })
@@ -1415,10 +1414,10 @@ const listLiveSessions = async (req, res) => {
   }
 };
 
-const listScheduledForProctor = async (req, res) => {
+const listScheduledTests = async (req, res) => {
   try {
-    if (!["EXAM_ADMIN", "EXAM_PROCTOR"].includes(req.examUser.role)) {
-      return res.status(403).json({ success: false, message: "Staff only" });
+    if (req.examUser.role !== "EXAM_ADMIN") {
+      return res.status(403).json({ success: false, message: "Admin only" });
     }
     const now = new Date();
     const tests = await ExamTest.find({
@@ -1452,7 +1451,7 @@ const listScheduledForProctor = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("listScheduledForProctor", error);
+    console.error("listScheduledTests", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
@@ -1818,7 +1817,7 @@ module.exports = {
   listSubjectsAdmin,
   createSubjectAdmin,
   listLiveSessions,
-  listScheduledForProctor,
+  listScheduledTests,
   listTestsAdmin,
   getTestAdmin,
   createTestAdmin,

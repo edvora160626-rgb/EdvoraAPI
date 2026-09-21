@@ -1,8 +1,9 @@
 const mongoose = require("mongoose");
 
 /**
- * Examination portal users (Nextestify-style):
- * EXAM_ADMIN | EXAM_CANDIDATE | EXAM_PROCTOR
+ * Examination portal users:
+ * EXAM_ADMIN | EXAM_CANDIDATE
+ * EXAM_PROCTOR is kept in the enum only for legacy documents.
  * Separate from school role collections.
  */
 const EXAM_USER_ROLES = ["EXAM_ADMIN", "EXAM_CANDIDATE", "EXAM_PROCTOR"];

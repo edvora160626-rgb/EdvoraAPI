@@ -25,7 +25,7 @@ const {
   listSubjectsAdmin,
   createSubjectAdmin,
   listLiveSessions,
-  listScheduledForProctor,
+  listScheduledTests,
   listTestsAdmin,
   getTestAdmin,
   createTestAdmin,
@@ -71,6 +71,6 @@ router.get("/staff/tests/:id", getTestAdmin);
 router.put("/staff/tests/:id", updateTestAdmin);
 router.post("/staff/tests/:id/publish", publishTestAdmin);
 router.get("/staff/live-sessions", listLiveSessions);
-router.get("/staff/scheduled", listScheduledForProctor);
+router.get("/staff/scheduled", listScheduledTests);
 
 module.exports = router;
