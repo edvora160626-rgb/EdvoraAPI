@@ -10,7 +10,7 @@ const app = express();
 app.use(
   cors({
     origin: [
-      "http://localhost:5175",
+      "http://localhost:5173",
       "https://edvora-eront.vercel.app",
       "https://edvora-front.vercel.app",
       "https://edvora-eront-gm2kegov3-edvora2.vercel.app",

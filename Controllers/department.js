@@ -19,7 +19,6 @@ const createDepartment = async (req, res) => {
             parentDepartment,
             isParentDept,
             color,
-            displayOrder,
             status,
             createdBy,
         } = req.body;
@@ -130,6 +129,15 @@ const createDepartment = async (req, res) => {
             name: departmentName,
         });
 
+        const lastOrdered = await Department.findOne({ schoolId })
+            .sort({ displayOrder: -1 })
+            .select("displayOrder")
+            .lean();
+        const nextDisplayOrder =
+            Number.isFinite(lastOrdered?.displayOrder)
+                ? lastOrdered.displayOrder + 1
+                : 1;
+
         const department = await Department.create({
             schoolId,
             departmentName: departmentName.trim(),
@@ -144,7 +152,7 @@ const createDepartment = async (req, res) => {
             parentDepartment: parentDepartment || null,
             isParentDept: isParentDept ?? false,
             color: color || "#4F46E5",
-            displayOrder: displayOrder || 0,
+            displayOrder: nextDisplayOrder,
             status: status || "ACTIVE",
             createdBy,
         });
@@ -401,13 +409,41 @@ const getActiveDepartmentsBySchool = async (req, res) => {
             .sort({ displayOrder: 1, departmentName: 1 })
             .lean();
 
+        // Count ACTIVE teachers by Teacher.department (same source as staff page)
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const staffCountRows = await Teacher.aggregate([
+            {
+                $match: {
+                    schoolId: schoolObjectId,
+                    status: "ACTIVE",
+                    department: { $exists: true, $ne: [] },
+                },
+            },
+            { $unwind: "$department" },
+            {
+                $group: {
+                    _id: "$department",
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const countByDept = new Map(
+            staffCountRows.map((row) => [String(row._id), row.count])
+        );
+
+        const data = departments.map((dept) => ({
+            ...dept,
+            staffCount: countByDept.get(String(dept._id)) || 0,
+        }));
+
         return res.status(200).json({
             success: true,
             message: `${filterStatus === "ACTIVE" ? "Active" : "Inactive"} departments fetched successfully.`,
             totalDepartments,
             counts,
             status: filterStatus,
-            data: departments,
+            data,
         });
     } catch (error) {
         console.error("getActiveDepartmentsBySchool Error:", error);
@@ -451,7 +487,6 @@ const getTeachersByDepartment = async (req, res) => {
         const departmentQuery = {
             _id: departmentId,
         };
-        console.log(departmentQuery,"departmentQuery")
 
         if (schoolId) {
             departmentQuery.schoolId = schoolId;
@@ -489,6 +524,15 @@ const getTeachersByDepartment = async (req, res) => {
                 lastName: 1,
             })
             .lean();
+
+        // Keep Department.teacherids aligned with teachers who list this department
+        const teacherIds = teachers.map((t) => t._id);
+        if (teacherIds.length > 0) {
+            await Department.updateOne(
+                { _id: department._id },
+                { $addToSet: { teacherids: { $each: teacherIds } } }
+            );
+        }
 
         return res.status(200).json({
             success: true,
