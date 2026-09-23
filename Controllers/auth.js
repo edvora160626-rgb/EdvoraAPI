@@ -13,9 +13,23 @@ const {
     ExamCandidate,
     EXAM_ROLE,
     EXAM_USER_ROLES,
+    LOGIN_USER_FIELDS,
     isExamPortalRole,
 } = require("../utils/roleModelMap");
+
+const SENSITIVE_USER_FIELDS = ["password", "forgotOtp", "welcomeOTP", "__v"];
+
+const toPublicUser = (user) => {
+    if (!user) return null;
+    const data =
+        typeof user.toObject === "function" ? user.toObject() : { ...user };
+    for (const key of SENSITIVE_USER_FIELDS) {
+        delete data[key];
+    }
+    return data;
+};
 const { generateStaffEmployeeId } = require("../utils/generateStaffId");
+const { isDbUnavailableError } = require("../middleware/requireDb");
 
 const normalizePhoneCode = (value) =>
     String(value ?? "").replace(/\D/g, "") || "91";
@@ -508,11 +522,13 @@ const login = async (req, res) => {
 
         const email = emailid.trim().toLowerCase();
 
-        // Strict portal isolation: school users ≠ exam candidates
+        // Strict portal isolation: school users ≠ exam candidates.
+        // School lookup hits 6 collections in parallel and returns on first hit.
+        const lookupOptions = { lean: true, projection: LOGIN_USER_FIELDS };
         const result =
             portal === "examination"
-                ? await findExamCandidate({ email })
-                : await findUserAcrossModels({ email });
+                ? await findExamCandidate({ email }, lookupOptions)
+                : await findUserAcrossModels({ email }, lookupOptions);
 
         if (!result) {
             return res.status(404).json({
@@ -581,18 +597,22 @@ const login = async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
-        const userData = user.toObject();
-        delete userData.password;
-
         return res.status(200).json({
             success: true,
             message: "Login successful",
             token,
-            user: userData,
+            user: toPublicUser(user),
             portalMode: portal,
         });
     } catch (error) {
         console.error("Login Error:", error);
+
+        if (isDbUnavailableError(error)) {
+            return res.status(503).json({
+                success: false,
+                message: "Database is unavailable. Please try again in a moment.",
+            });
+        }
 
         return res.status(500).json({
             success: false,
@@ -738,24 +758,26 @@ const pendingRequests = async (req, res) => {
 
         // Initial stage (no role): return counts for all statuses per role
         if (!role) {
-            const counts = {};
-            for (const [roleName, Model] of Object.entries(roleModelMap)) {
-                const [requested, active, inactive] = await Promise.all([
-                    Model.countDocuments({ schoolId, status: "REQUESTED" }),
-                    Model.countDocuments({ schoolId, status: "ACTIVE" }),
-                    Model.countDocuments({ schoolId, status: "INACTIVE" }),
-                ]);
-
-                counts[roleName] = {
-                    REQUESTED: requested,
-                    ACTIVE: active,
-                    INACTIVE: inactive,
-                };
-            }
+            const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+            const counted = await Promise.all(
+                Object.entries(roleModelMap).map(async ([roleName, Model]) => {
+                    const grouped = await Model.aggregate([
+                        { $match: { schoolId: schoolObjectId } },
+                        { $group: { _id: "$status", n: { $sum: 1 } } },
+                    ]);
+                    const bag = { REQUESTED: 0, ACTIVE: 0, INACTIVE: 0 };
+                    for (const row of grouped) {
+                        if (row?._id && bag[row._id] !== undefined) {
+                            bag[row._id] = row.n;
+                        }
+                    }
+                    return [roleName, bag];
+                })
+            );
 
             return res.json({
                 success: true,
-                counts
+                counts: Object.fromEntries(counted),
             });
         }
 
@@ -1222,11 +1244,19 @@ const forgotPassword = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: "OTP has been sent to your registered email."
+            message: "OTP has been sent to your registered email.",
+            otp,
         });
 
     } catch (error) {
         console.error("forgotPassword Error:", error);
+
+        if (isDbUnavailableError(error)) {
+            return res.status(503).json({
+                success: false,
+                message: "Database is unavailable. Please try again in a moment.",
+            });
+        }
 
         return res.status(500).json({
             success: false,
@@ -1294,6 +1324,13 @@ const verifyForgotOtp = async (req, res) => {
     } catch (error) {
         console.error("verifyForgotOtp Error:", error);
 
+        if (isDbUnavailableError(error)) {
+            return res.status(503).json({
+                success: false,
+                message: "Database is unavailable. Please try again in a moment.",
+            });
+        }
+
         return res.status(500).json({
             success: false,
             message: "Internal Server Error",
@@ -1308,7 +1345,8 @@ const verifyForgotOtp = async (req, res) => {
 const getAllSchools = async (req, res) => {
     try {
         const allSchools = await School.find({})
-            .select("schoolName _id");
+            .select("schoolName _id")
+            .lean();
 
         return res.status(200).json({
             success: true,

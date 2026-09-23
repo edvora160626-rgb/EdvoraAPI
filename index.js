@@ -10,7 +10,7 @@ const app = express();
 app.use(
   cors({
     origin: [
-      "http://localhost:5175",
+      "http://localhost:5175","http://localhost:5173",
       "https://edvora-eront.vercel.app",
       "https://edvora-front.vercel.app",
       "https://edvora-eront-gm2kegov3-edvora2.vercel.app",
@@ -28,6 +28,8 @@ app.get("/", (req, res) => {
         message: "Edvora Backend Running"
     });
 });
+const requireDb = require("./middleware/requireDb");
+const { isDbUnavailableError } = requireDb;
 const schoolRoutes = require("./routes/auth.routes");
 const departmentRoutes = require("./routes/department.routes");
 const classesRoutes = require("./routes/classes.routes");
@@ -37,6 +39,50 @@ const eventsRoutes = require("./routes/events.routes");
 const timetableRoutes = require("./routes/timetable.routes");
 const examRoutes = require("./routes/exam.routes");
 
+mongoose.set("bufferCommands", false);
+
+let mongoRetryTimer = null;
+
+function scheduleMongoRetry() {
+  if (mongoRetryTimer) return;
+  mongoRetryTimer = setTimeout(() => {
+    mongoRetryTimer = null;
+    connectMongo();
+  }, 5000);
+}
+
+async function connectMongo() {
+  const uri = process.env.MONGO_URI;
+  if (!uri) {
+    console.error("❌ MONGO_URI is missing");
+    return;
+  }
+
+  const state = mongoose.connection.readyState;
+  if (state === 1 || state === 2) return;
+
+  try {
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 8000,
+      maxPoolSize: 20,
+      minPoolSize: 2,
+      maxIdleTimeMS: 30000,
+    });
+    console.log("✅ MongoDB Connected");
+  } catch (error) {
+    console.error("❌ MongoDB Connection Failed:", error.message);
+    scheduleMongoRetry();
+  }
+}
+
+mongoose.connection.on("disconnected", () => {
+  console.warn("⚠️ MongoDB disconnected");
+  scheduleMongoRetry();
+});
+
+connectMongo();
+
+app.use(requireDb);
 app.use("/auth", schoolRoutes);
 app.use("/department", departmentRoutes);
 app.use("/class", classesRoutes);
@@ -45,24 +91,6 @@ app.use("/attendance", attendanceRoutes);
 app.use("/events", eventsRoutes);
 app.use("/timetable", timetableRoutes);
 app.use("/exam", examRoutes);
-
-console.log(process.env.MONGO_URI);
-// Database Connection
-mongoose
-    .connect(process.env.MONGO_URI)
-    .then(async () => {
-        console.log("✅ MongoDB Connected");
-        try {
-            const Subject = require("./models/Subjects.model");
-            await Subject.syncIndexes();
-        } catch (err) {
-            console.warn("Subject index sync:", err.message);
-        }
-    })
-    .catch((error) => {
-        console.log("❌ MongoDB Connection Failed");
-        console.log(error);
-    });
 
 app.use((req, res) => {
     res.status(404).json({
@@ -74,6 +102,13 @@ app.use((req, res) => {
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error(err);
+
+    if (isDbUnavailableError(err)) {
+        return res.status(503).json({
+            success: false,
+            message: "Database is unavailable. Please try again in a moment.",
+        });
+    }
 
     res.status(err.status || 500).json({
         success: false,

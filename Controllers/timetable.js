@@ -74,47 +74,8 @@ const populateTimetable = (query) =>
 
 const entryKey = (day, timeSlotId) => `${day}:${String(timeSlotId)}`;
 
-async function findConflicts({
-  schoolId,
-  academicYearId,
-  classId,
-  day,
-  timeSlotId,
-  teacherId,
-  roomId,
-  excludeTimetableId,
-  softWorkload = false,
-}) {
+function scanTeacherRoomConflicts(timetables, { classId, day, timeSlotId, teacherId, roomId }) {
   const conflicts = [];
-  const warnings = [];
-
-  const timetables = await Timetable.find({
-    schoolId,
-    academicYearId,
-    ...(excludeTimetableId ? { _id: { $ne: excludeTimetableId } } : {}),
-  })
-    .populate("classId", "className section")
-    .lean();
-
-  const sameClass = await Timetable.findOne({
-    schoolId,
-    academicYearId,
-    classId,
-  }).lean();
-
-  if (sameClass) {
-    const clash = (sameClass.entries || []).find(
-      (e) =>
-        e.day === day &&
-        String(e.timeSlotId) === String(timeSlotId) &&
-        (!excludeTimetableId || true)
-    );
-    // Same-class slot clash is handled as overwrite in upsert; report only if checking
-    if (clash && teacherId) {
-      // no-op for same class — overwrite path
-    }
-  }
-
   for (const tt of timetables) {
     for (const entry of tt.entries || []) {
       if (entry.day !== day || String(entry.timeSlotId) !== String(timeSlotId)) {
@@ -149,8 +110,42 @@ async function findConflicts({
       }
     }
   }
+  return conflicts;
+}
 
-  // Also check same timetable other entries for teacher/room (shouldn't happen same slot)
+async function findConflicts({
+  schoolId,
+  academicYearId,
+  classId,
+  day,
+  timeSlotId,
+  teacherId,
+  roomId,
+  excludeTimetableId,
+  softWorkload = false,
+}) {
+  const conflicts = [];
+  const warnings = [];
+
+  const timetables = await Timetable.find({
+    schoolId,
+    academicYearId,
+    ...(excludeTimetableId ? { _id: { $ne: excludeTimetableId } } : {}),
+  })
+    .select("classId entries")
+    .populate("classId", "className section")
+    .lean();
+
+  conflicts.push(
+    ...scanTeacherRoomConflicts(timetables, {
+      classId,
+      day,
+      timeSlotId,
+      teacherId,
+      roomId,
+    })
+  );
+
   // Workload check
   if (teacherId) {
     const availability = await TeacherAvailability.findOne({
@@ -209,45 +204,41 @@ async function findConflicts({
 async function collectPublishConflicts(schoolId, academicYearId, timetable) {
   const conflicts = [];
   const warnings = [];
-  const periodSlots = await TimeSlot.find({
-    schoolId,
-    academicYearId,
-    type: "PERIOD",
-  })
-    .select("_id")
-    .lean();
+  const [periodSlots, allTts] = await Promise.all([
+    TimeSlot.find({
+      schoolId,
+      academicYearId,
+      type: "PERIOD",
+    })
+      .select("_id")
+      .lean(),
+    Timetable.find({ schoolId, academicYearId })
+      .select("classId entries")
+      .populate("classId", "className section")
+      .lean(),
+  ]);
   const periodIds = new Set(periodSlots.map((s) => String(s._id)));
+  const others = allTts.filter((tt) => String(tt._id) !== String(timetable._id));
 
   for (const entry of timetable.entries || []) {
     if (!periodIds.has(String(entry.timeSlotId))) continue;
     if (!entry.teacherId && !entry.subjectId) continue;
 
-    const result = await findConflicts({
-      schoolId,
-      academicYearId,
+    const found = scanTeacherRoomConflicts(others, {
       classId: timetable.classId,
       day: entry.day,
       timeSlotId: entry.timeSlotId,
       teacherId: entry.teacherId,
       roomId: entry.roomId,
-      excludeTimetableId: timetable._id,
-      softWorkload: false,
     });
 
-    // Re-check teacher/room against OTHER classes only — findConflicts already does that
-    // But findConflicts also checks workload counting other entries; for publish we need
-    // to not double-count. Use a lighter check for publish:
-
-    for (const c of result.conflicts) {
-      if (c.type === "TEACHER" || c.type === "ROOM" || c.type === "AVAILABILITY") {
-        conflicts.push({ ...c, day: entry.day, timeSlotId: entry.timeSlotId });
-      }
+    for (const c of found) {
+      conflicts.push({ ...c, day: entry.day, timeSlotId: entry.timeSlotId });
     }
   }
 
   // Workload per teacher per day across this + others
   const teacherDayCount = {};
-  const allTts = await Timetable.find({ schoolId, academicYearId }).lean();
 
   for (const tt of allTts) {
     const isSelf = String(tt._id) === String(timetable._id);

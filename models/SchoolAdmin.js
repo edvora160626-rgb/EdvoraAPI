@@ -19,5 +19,6 @@ const schoolAdminSchema = new mongoose.Schema(
 );
 
 schoolAdminSchema.index({ schoolId: 1, employeeId: 1 });
+schoolAdminSchema.index({ schoolId: 1, status: 1 });
 
 module.exports = mongoose.model("SchoolAdmin", schoolAdminSchema);

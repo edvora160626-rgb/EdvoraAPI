@@ -57,5 +57,8 @@ const examAttemptSchema = new mongoose.Schema(
 );
 
 examAttemptSchema.index({ candidateId: 1, testId: 1, status: 1 });
+examAttemptSchema.index({ candidateId: 1, status: 1, submittedAt: -1 });
+examAttemptSchema.index({ candidateId: 1, mode: 1, status: 1 });
+examAttemptSchema.index({ status: 1, startedAt: -1 });
 
 module.exports = mongoose.model("ExamAttempt", examAttemptSchema);

@@ -83,5 +83,7 @@ const attendanceLogSchema = new mongoose.Schema(
 
 attendanceLogSchema.index({ schoolId: 1, type: 1, createdAt: -1 });
 attendanceLogSchema.index({ schoolId: 1, type: 1, classId: 1, createdAt: -1 });
+attendanceLogSchema.index({ schoolId: 1, type: 1, attendanceDate: -1 });
+attendanceLogSchema.index({ schoolId: 1, type: 1, classId: 1, attendanceDate: -1 });
 
 module.exports = mongoose.model("AttendanceLog", attendanceLogSchema);

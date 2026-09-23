@@ -88,7 +88,7 @@ const getDashboard = async (req, res) => {
     const candidateId = req.examUser.id;
     const now = new Date();
 
-    const [practiceDone, results, upcomingTests, enrollments] =
+    const [practiceDone, results, upcomingTests, enrollments, certificates] =
       await Promise.all([
         ExamAttempt.countDocuments({
           candidateId,
@@ -122,6 +122,11 @@ const getDashboard = async (req, res) => {
         })
           .select("testId")
           .lean(),
+        ExamAttempt.countDocuments({
+          candidateId,
+          status: "SUBMITTED",
+          certificateIssued: true,
+        }),
       ]);
 
     const enrolledSet = new Set(enrollments.map((e) => String(e.testId)));
@@ -131,11 +136,6 @@ const getDashboard = async (req, res) => {
         : Math.round(
             results.reduce((sum, r) => sum + (r.score || 0), 0) / results.length
           );
-    const certificates = await ExamAttempt.countDocuments({
-      candidateId,
-      status: "SUBMITTED",
-      certificateIssued: true,
-    });
 
     return res.json({
       success: true,
@@ -370,7 +370,9 @@ const startAttempt = async (req, res) => {
     if (existing) {
       const questions = await ExamQuestion.find({
         _id: { $in: existing.questionIds },
-      }).lean();
+      })
+        .select("text options marks topic difficulty")
+        .lean();
       const qMap = new Map(questions.map((q) => [String(q._id), q]));
       const ordered = existing.questionIds
         .map((id) => qMap.get(String(id)))
@@ -424,7 +426,9 @@ const startAttempt = async (req, res) => {
 
     const questions = await ExamQuestion.find({
       _id: { $in: test.questionIds },
-    }).lean();
+    })
+      .select("text options marks topic difficulty")
+      .lean();
     const qMap = new Map(questions.map((q) => [String(q._id), q]));
     const ordered = test.questionIds
       .map((id) => qMap.get(String(id)))

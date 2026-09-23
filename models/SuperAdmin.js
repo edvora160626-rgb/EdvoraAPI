@@ -15,4 +15,6 @@ const superAdminSchema = new mongoose.Schema(
     }
 );
 
+superAdminSchema.index({ schoolId: 1, status: 1 });
+
 module.exports = mongoose.model("SuperAdmin", superAdminSchema);

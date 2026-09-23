@@ -5,7 +5,7 @@ const AttendanceLog = require("../models/AttendanceLog.model");
 const Teacher = require("../models/Teacher");
 const Student = require("../models/Student");
 const ClassesModel = require("../models/Classes.model");
-const { findUserAcrossModels } = require("../utils/roleModelMap");
+const { findUserById } = require("../utils/roleModelMap");
 
 function startOfDay(dateInput) {
     const d = new Date(dateInput);
@@ -23,6 +23,26 @@ function parseLocalDate(dateStr) {
         return new Date(Date.UTC(year, month, day));
     }
     return startOfDay(dateStr);
+}
+
+function todayISO() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+function dateToISO(date) {
+    if (!date) return "";
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(date.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+}
+
+function isFutureISO(iso) {
+    return Boolean(iso) && iso > todayISO();
 }
 
 function summarizeRecords(records = []) {
@@ -61,20 +81,28 @@ function normalizeStatus(status) {
     return ATTENDANCE_STATUSES.includes(resolved) ? resolved : null;
 }
 
+const actorMemo = new Map();
+
 async function resolveActor(markedBy) {
     if (!markedBy || !mongoose.Types.ObjectId.isValid(markedBy)) {
         return { name: "Unknown", role: "" };
     }
 
+    const key = String(markedBy);
+    const hit = actorMemo.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return hit.value;
+
     try {
-        const found = await findUserAcrossModels({ _id: markedBy });
+        const found = await findUserById(markedBy);
         if (!found?.user) return { name: "Unknown", role: "" };
         const user = found.user;
         const name =
             [user.firstName, user.lastName].filter(Boolean).join(" ").trim() ||
             user.email ||
             "Unknown";
-        return { name, role: user.role || "" };
+        const result = { name, role: user.role || "" };
+        actorMemo.set(key, { at: Date.now(), value: result });
+        return result;
     } catch {
         return { name: "Unknown", role: "" };
     }
@@ -127,7 +155,7 @@ async function assertStudentClassAccess({ schoolId, classId, actorId }) {
         return { ok: true, classDoc };
     }
 
-    const found = await findUserAcrossModels({ _id: actorId });
+    const found = await findUserById(actorId);
     const role = found?.user?.role || "";
     if (ADMIN_ROLES.has(role)) {
         return { ok: true, classDoc };
@@ -275,7 +303,7 @@ const getAssignedClassesForAttendance = async (req, res) => {
         }
 
         const attendanceDate = parseLocalDate(date) || parseLocalDate(new Date());
-        const found = await findUserAcrossModels({ _id: teacherId });
+        const found = await findUserById(teacherId);
         const role = found?.user?.role || "";
 
         const classFilter = {
@@ -520,6 +548,13 @@ const markAttendance = async (req, res) => {
             });
         }
 
+        if (isFutureISO(dateToISO(attendanceDate))) {
+            return res.status(400).json({
+                success: false,
+                message: "Attendance cannot be marked for a future date.",
+            });
+        }
+
         const cleanedRecords = [];
         for (const item of records) {
             if (!item?.personId || !mongoose.Types.ObjectId.isValid(item.personId)) {
@@ -618,10 +653,10 @@ const bulkUploadAttendance = async (req, res) => {
     try {
         const { schoolId, type, date, classId, rows, markedBy, notes } = req.body;
 
-        if (!schoolId || !type || !date || !markedBy) {
+        if (!schoolId || !type || !markedBy) {
             return res.status(400).json({
                 success: false,
-                message: "schoolId, type, date and markedBy are required.",
+                message: "schoolId, type and markedBy are required.",
             });
         }
 
@@ -676,13 +711,8 @@ const bulkUploadAttendance = async (req, res) => {
             }
         }
 
-        const attendanceDate = parseLocalDate(date);
-        if (!attendanceDate) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid date. Use YYYY-MM-DD format.",
-            });
-        }
+        const fallbackDate = parseLocalDate(date);
+        const fallbackISO = fallbackDate ? dateToISO(fallbackDate) : "";
 
         let people = [];
         if (type === "TEACHER") {
@@ -720,9 +750,8 @@ const bulkUploadAttendance = async (req, res) => {
                 byRoll.set(String(person.rollNumber).toLowerCase(), person);
         }
 
-        const validRecords = [];
         const errors = [];
-        const seen = new Set();
+        const grouped = new Map();
 
         rows.forEach((row, index) => {
             const line = index + 1;
@@ -739,16 +768,37 @@ const bulkUploadAttendance = async (req, res) => {
                 .toLowerCase();
 
             const status = normalizeStatus(row.status);
+            const rowISO = String(row.date || fallbackISO || "").trim();
 
             if (!identifier) {
-                errors.push({ line, message: "Missing identifier." });
+                errors.push({ line, date: rowISO, message: "Missing identifier." });
                 return;
             }
 
             if (!status) {
                 errors.push({
                     line,
+                    date: rowISO,
                     message: `Invalid status "${row.status || ""}".`,
+                });
+                return;
+            }
+
+            const attendanceDate = parseLocalDate(rowISO);
+            if (!attendanceDate) {
+                errors.push({
+                    line,
+                    date: rowISO,
+                    message: "Invalid or missing date. Use YYYY-MM-DD.",
+                });
+                return;
+            }
+
+            if (isFutureISO(dateToISO(attendanceDate))) {
+                errors.push({
+                    line,
+                    date: rowISO,
+                    message: `Future date ${dateToISO(attendanceDate)} cannot be marked.`,
                 });
                 return;
             }
@@ -769,106 +819,207 @@ const bulkUploadAttendance = async (req, res) => {
             if (!person) {
                 errors.push({
                     line,
+                    date: rowISO,
                     message: `No match found for "${identifier}".`,
                 });
                 return;
             }
 
+            const iso = dateToISO(attendanceDate);
+            if (!grouped.has(iso)) grouped.set(iso, new Map());
+            const dayMap = grouped.get(iso);
             const personKey = String(person._id);
-            if (seen.has(personKey)) {
+            if (dayMap.has(personKey)) {
                 errors.push({
                     line,
-                    message: `Duplicate entry for "${identifier}".`,
+                    date: iso,
+                    message: `Duplicate entry for "${identifier}" on ${iso}.`,
                 });
                 return;
             }
-            seen.add(personKey);
 
-            validRecords.push({
+            dayMap.set(personKey, {
                 personId: person._id,
                 status,
                 remarks: row.remarks ? String(row.remarks).trim() : "",
             });
         });
 
-        if (validRecords.length === 0) {
+        if (grouped.size === 0) {
             return res.status(400).json({
                 success: false,
                 message: "No valid attendance rows to save.",
                 errors,
-                summary: { valid: 0, invalid: errors.length },
+                summary: { valid: 0, invalid: errors.length, days: 0 },
             });
         }
 
-        const filter = {
-            schoolId,
-            type,
-            date: attendanceDate,
-            classId: type === "STUDENT" ? classId : null,
+        let validCount = 0;
+        const totals = {
+            PRESENT: 0,
+            ABSENT: 0,
+            LATE: 0,
+            HALF_DAY: 0,
+            LEAVE: 0,
         };
 
-        const existing = await Attendance.findOne(filter)
-            .select("records notes")
-            .lean();
-        const mergedMap = new Map(
-            (existing?.records || []).map((r) => [String(r.personId), r])
-        );
+        for (const [iso, dayMap] of grouped.entries()) {
+            const attendanceDate = parseLocalDate(iso);
+            const validRecords = Array.from(dayMap.values());
+            validCount += validRecords.length;
 
-        for (const record of validRecords) {
-            mergedMap.set(String(record.personId), record);
-        }
+            const filter = {
+                schoolId,
+                type,
+                date: attendanceDate,
+                classId: type === "STUDENT" ? classId : null,
+            };
 
-        const mergedRecords = Array.from(mergedMap.values());
+            const existing = await Attendance.findOne(filter)
+                .select("records notes")
+                .lean();
+            const mergedMap = new Map(
+                (existing?.records || []).map((r) => [String(r.personId), r])
+            );
 
-        const attendance = await Attendance.findOneAndUpdate(
-            filter,
-            {
-                $set: {
-                    records: mergedRecords,
-                    markedBy,
-                    notes: notes
-                        ? String(notes).trim()
-                        : existing?.notes || "Bulk upload",
-                },
-                $setOnInsert: filter,
-            },
-            {
-                upsert: true,
-                new: true,
-                lean: true,
-                projection: { records: 1 },
+            for (const record of validRecords) {
+                mergedMap.set(String(record.personId), record);
+                if (totals[record.status] != null) totals[record.status] += 1;
             }
-        );
 
-        const summary = summarizeRecords(attendance?.records || []);
+            const mergedRecords = Array.from(mergedMap.values());
+            const attendance = await Attendance.findOneAndUpdate(
+                filter,
+                {
+                    $set: {
+                        records: mergedRecords,
+                        markedBy,
+                        notes: notes
+                            ? String(notes).trim()
+                            : existing?.notes || "Bulk upload",
+                    },
+                    $setOnInsert: filter,
+                },
+                {
+                    upsert: true,
+                    new: true,
+                    lean: true,
+                    projection: { records: 1 },
+                }
+            );
 
-        await writeAttendanceLog({
-            schoolId,
-            type,
-            action: "BULK_UPLOAD",
-            attendanceDate,
-            classId: type === "STUDENT" ? classId : null,
-            attendanceId: attendance?._id || null,
-            markedBy,
-            records: attendance?.records || [],
-            notes: notes
-                ? String(notes).trim()
-                : existing?.notes || "Bulk upload",
-            source: "BULK",
-        });
+            await writeAttendanceLog({
+                schoolId,
+                type,
+                action: "BULK_UPLOAD",
+                attendanceDate,
+                classId: type === "STUDENT" ? classId : null,
+                attendanceId: attendance?._id || null,
+                markedBy,
+                records: attendance?.records || [],
+                notes: notes
+                    ? String(notes).trim()
+                    : existing?.notes || "Bulk upload",
+                source: "BULK",
+            });
+        }
 
         return res.status(200).json({
             success: true,
-            message: "Bulk attendance uploaded successfully.",
+            message: `Bulk attendance uploaded for ${grouped.size} day(s).`,
             summary: {
-                valid: validRecords.length,
+                valid: validCount,
                 invalid: errors.length,
-                ...summary,
+                days: grouped.size,
+                ...totals,
             },
             errors,
         });
     } catch (error) {
         console.error("bulkUploadAttendance Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+        });
+    }
+};
+
+const getMonthAttendance = async (req, res) => {
+    try {
+        const { schoolId, type, month, classId, teacherId } = req.body;
+
+        if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid schoolId is required.",
+            });
+        }
+
+        const attendanceType = ["TEACHER", "STUDENT"].includes(type)
+            ? type
+            : "TEACHER";
+
+        const monthKey = String(month || todayISO().slice(0, 7));
+        if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+            return res.status(400).json({
+                success: false,
+                message: "month must be YYYY-MM.",
+            });
+        }
+
+        const start = parseLocalDate(`${monthKey}-01`);
+        const [year, mon] = monthKey.split("-").map(Number);
+        const lastDay = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+        const end = parseLocalDate(
+            `${monthKey}-${String(lastDay).padStart(2, "0")}`
+        );
+
+        if (attendanceType === "STUDENT") {
+            if (!classId || !mongoose.Types.ObjectId.isValid(classId)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "classId is required for student attendance.",
+                });
+            }
+            const access = await assertStudentClassAccess({
+                schoolId,
+                classId,
+                actorId: teacherId,
+            });
+            if (!access.ok) {
+                return res.status(access.status).json({
+                    success: false,
+                    message: access.message,
+                });
+            }
+        }
+
+        const filter = {
+            schoolId,
+            type: attendanceType,
+            date: { $gte: start, $lte: end },
+        };
+        if (attendanceType === "STUDENT") filter.classId = classId;
+
+        const docs = await Attendance.find(filter)
+            .select("date records.personId records.status")
+            .lean();
+
+        const marks = {};
+        for (const doc of docs) {
+            const iso = dateToISO(doc.date);
+            for (const record of doc.records || []) {
+                marks[`${record.personId}|${iso}`] = record.status;
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            month: monthKey,
+            marks,
+        });
+    } catch (error) {
+        console.error("getMonthAttendance Error:", error);
         return res.status(500).json({
             success: false,
             message: "Internal Server Error",
@@ -1109,6 +1260,7 @@ module.exports = {
     getStudentsForAttendance,
     markAttendance,
     bulkUploadAttendance,
+    getMonthAttendance,
     getAttendanceSummary,
     getAttendanceLogs,
     getAttendanceLogDetail,

@@ -48,5 +48,6 @@ examTestSchema.virtual("questionCount").get(function () {
 
 examTestSchema.set("toJSON", { virtuals: true });
 examTestSchema.set("toObject", { virtuals: true });
+examTestSchema.index({ status: 1, type: 1, startsAt: 1 });
 
 module.exports = mongoose.model("ExamTest", examTestSchema);

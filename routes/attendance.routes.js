@@ -5,6 +5,7 @@ const {
     getStudentsForAttendance,
     markAttendance,
     bulkUploadAttendance,
+    getMonthAttendance,
     getAttendanceSummary,
     getAttendanceLogs,
     getAttendanceLogDetail,
@@ -17,6 +18,7 @@ router.post("/getTeachersForAttendance", getTeachersForAttendance);
 router.post("/getStudentsForAttendance", getStudentsForAttendance);
 router.post("/markAttendance", markAttendance);
 router.post("/bulkUploadAttendance", bulkUploadAttendance);
+router.post("/getMonthAttendance", getMonthAttendance);
 router.post("/getAttendanceSummary", getAttendanceSummary);
 router.post("/getAttendanceLogs", getAttendanceLogs);
 router.post("/getAttendanceLogDetail", getAttendanceLogDetail);

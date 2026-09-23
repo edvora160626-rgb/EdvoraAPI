@@ -28,4 +28,6 @@ const parentSchema = new mongoose.Schema(
     }
 );
 
+parentSchema.index({ schoolId: 1, status: 1 });
+
 module.exports = mongoose.model("Parent", parentSchema);

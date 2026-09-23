@@ -71,5 +71,6 @@ classSchema.index({
 }, {
   unique: true,
 });
+classSchema.index({ schoolId: 1, status: 1, classTeacherId: 1 });
 
 module.exports = mongoose.model("Class", classSchema);

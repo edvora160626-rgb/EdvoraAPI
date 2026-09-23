@@ -15,4 +15,6 @@ const productAdminSchema = new mongoose.Schema(
     }
 );
 
+productAdminSchema.index({ schoolId: 1, status: 1 });
+
 module.exports = mongoose.model("ProductAdmin", productAdminSchema);

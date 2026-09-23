@@ -389,7 +389,12 @@ const getEventsBySchool = async (req, res) => {
     }
 
     const [events, countsAgg] = await Promise.all([
-      Event.find(filter).sort({ eventDate: 1, createdAt: -1 }).lean(),
+      Event.find(filter)
+        .select(
+          "eventName description bannerUrl eventDate eventTime venue status registrationStartDate registrationEndDate createdAt"
+        )
+        .sort({ eventDate: 1, createdAt: -1 })
+        .lean(),
       Event.aggregate([
         { $match: { schoolId: new mongoose.Types.ObjectId(schoolId) } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
