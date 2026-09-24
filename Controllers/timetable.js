@@ -382,6 +382,7 @@ const updateAcademicYear = async (req, res) => {
       startDate,
       endDate,
       status,
+      isCurrent,
       updatedBy,
     } = req.body;
     if (!requireSchoolId(schoolId, res)) return;
@@ -422,6 +423,17 @@ const updateAcademicYear = async (req, res) => {
       year.endDate = end;
     }
     if (status && ["ACTIVE", "INACTIVE"].includes(status)) year.status = status;
+
+    if (isCurrent === true) {
+      await AcademicYear.updateMany(
+        { schoolId, isCurrent: true, _id: { $ne: year._id } },
+        { $set: { isCurrent: false } }
+      );
+      year.isCurrent = true;
+    } else if (isCurrent === false) {
+      year.isCurrent = false;
+    }
+
     year.updatedBy = updatedBy || null;
     await year.save();
 
@@ -431,6 +443,12 @@ const updateAcademicYear = async (req, res) => {
       data: year,
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Academic year with this name already exists.",
+      });
+    }
     return serverError(res, error, "updateAcademicYear");
   }
 };

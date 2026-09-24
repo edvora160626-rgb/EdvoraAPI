@@ -12,6 +12,28 @@ const {
     ensureTeachersHaveStaffIds,
 } = require("../utils/generateStaffId");
 
+/** Letters, numbers, and single spaces between words only. */
+const VALID_CLASS_FIELD = /^[a-zA-Z0-9]+(?:\s+[a-zA-Z0-9]+)*$/;
+
+function assertAlphanumericField(value, fieldLabel, res) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) {
+        res.status(400).json({
+            success: false,
+            message: `${fieldLabel} is required.`,
+        });
+        return null;
+    }
+    if (!VALID_CLASS_FIELD.test(trimmed)) {
+        res.status(400).json({
+            success: false,
+            message: `${fieldLabel} may only contain letters and numbers (no special characters).`,
+        });
+        return null;
+    }
+    return trimmed;
+}
+
 async function getClassRelatedUsage(classId) {
     const id = new mongoose.Types.ObjectId(classId);
 
@@ -89,10 +111,15 @@ const addClasses = async (req, res) => {
             });
         }
 
+        const safeName = assertAlphanumericField(className, "Class name", res);
+        if (safeName === null) return;
+        const safeSection = assertAlphanumericField(section, "Section", res);
+        if (safeSection === null) return;
+
         const existingClass = await ClassesModel.findOne({
             schoolId,
-            className: className.trim(),
-            section: section.trim().toUpperCase(),
+            className: safeName,
+            section: safeSection.toUpperCase(),
         }).lean();
 
         if (existingClass) {
@@ -104,8 +131,8 @@ const addClasses = async (req, res) => {
 
         const newClass = await ClassesModel.create({
             schoolId,
-            className: className.trim(),
-            section: section.trim().toUpperCase(),
+            className: safeName,
+            section: safeSection.toUpperCase(),
             classTeacherId: classTeacherId || null,
             createdBy,
             updatedBy: createdBy,
@@ -173,8 +200,11 @@ const updateClass = async (req, res) => {
             });
         }
 
-        const nextName = className.trim();
-        const nextSection = section.trim().toUpperCase();
+        const nextName = assertAlphanumericField(className, "Class name", res);
+        if (nextName === null) return;
+        const nextSectionRaw = assertAlphanumericField(section, "Section", res);
+        if (nextSectionRaw === null) return;
+        const nextSection = nextSectionRaw.toUpperCase();
 
         const duplicate = await ClassesModel.findOne({
             schoolId: classDoc.schoolId,
