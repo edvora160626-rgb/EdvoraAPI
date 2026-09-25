@@ -28,6 +28,8 @@ const {
   deleteAllocation,
   getTimetableByClass,
   upsertTimetableEntry,
+  saveScheduleBlock,
+  deleteScheduleBlock,
   clearTimetableEntry,
   checkConflicts,
   publishTimetable,
@@ -84,6 +86,8 @@ router.post("/deleteAllocation", deleteAllocation);
 // Timetable grid
 router.post("/getTimetableByClass", getTimetableByClass);
 router.post("/upsertEntry", upsertTimetableEntry);
+router.post("/saveScheduleBlock", saveScheduleBlock);
+router.post("/deleteScheduleBlock", deleteScheduleBlock);
 router.post("/clearEntry", clearTimetableEntry);
 router.post("/checkConflicts", checkConflicts);
 router.post("/publishTimetable", publishTimetable);

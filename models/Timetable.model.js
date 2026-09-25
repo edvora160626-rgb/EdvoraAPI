@@ -12,7 +12,22 @@ const timetableEntrySchema = new mongoose.Schema(
     timeSlotId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "TimeSlot",
-      required: true,
+      default: null,
+    },
+    startTime: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    endTime: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    periodName: {
+      type: String,
+      trim: true,
+      default: "",
     },
     subjectId: {
       type: mongoose.Schema.Types.ObjectId,

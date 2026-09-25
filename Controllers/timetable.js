@@ -1596,6 +1596,265 @@ const upsertTimetableEntry = async (req, res) => {
   }
 };
 
+function toMinutes(hhmm) {
+  const match = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function minutesToHHMM(total) {
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function rangesOverlap(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
+async function slotMapForYear(schoolId, academicYearId) {
+  const slots = await TimeSlot.find({ schoolId, academicYearId })
+    .select("startTime endTime name")
+    .lean();
+  return new Map(slots.map((slot) => [String(slot._id), slot]));
+}
+
+function windowForEntry(entry, slotsById) {
+  const start = toMinutes(entry.startTime);
+  const end = toMinutes(entry.endTime);
+  if (start != null && end != null && end > start) {
+    return { start, end };
+  }
+  const slot = slotsById.get(String(entry.timeSlotId?._id || entry.timeSlotId || ""));
+  if (!slot) return null;
+  const slotStart = toMinutes(slot.startTime);
+  const slotEnd = toMinutes(slot.endTime);
+  if (slotStart == null || slotEnd == null || slotEnd <= slotStart) return null;
+  return { start: slotStart, end: slotEnd };
+}
+
+const saveScheduleBlock = async (req, res) => {
+  try {
+    const {
+      schoolId,
+      academicYearId,
+      classId,
+      entryId,
+      day,
+      startTime,
+      endTime,
+      periodName,
+      subjectId,
+      teacherId,
+      roomId,
+      updatedBy,
+    } = req.body;
+
+    if (!requireSchoolId(schoolId, res)) return;
+    if (!academicYearId || !classId || !day || !startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        message: "academicYearId, classId, day, startTime and endTime are required.",
+      });
+    }
+    if (!DAYS.includes(day)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid day.",
+      });
+    }
+
+    const start = toMinutes(startTime);
+    const end = toMinutes(endTime);
+    if (start == null || end == null || end <= start) {
+      return res.status(400).json({
+        success: false,
+        message: "End time must be after start time.",
+      });
+    }
+    if (end - start < 5) {
+      return res.status(400).json({
+        success: false,
+        message: "A period must be at least 5 minutes.",
+      });
+    }
+
+    const slotsById = await slotMapForYear(schoolId, academicYearId);
+    const timetables = await Timetable.find({ schoolId, academicYearId })
+      .select("classId entries")
+      .populate("classId", "className section")
+      .lean();
+
+    const conflicts = [];
+
+    for (const tt of timetables) {
+      const sameClass = String(tt.classId?._id || tt.classId) === String(classId);
+      for (const entry of tt.entries || []) {
+        if (entryId && String(entry._id) === String(entryId)) continue;
+        if (entry.day !== day) continue;
+        const window = windowForEntry(entry, slotsById);
+        if (!window || !rangesOverlap(start, end, window.start, window.end)) continue;
+
+        const label = tt.classId
+          ? `${tt.classId.className} ${tt.classId.section || ""}`.trim()
+          : "Another class";
+
+        if (sameClass) {
+          conflicts.push({
+            type: "CLASS",
+            message: `This class already has a period ${minutesToHHMM(window.start)}–${minutesToHHMM(window.end)}.`,
+          });
+        } else if (
+          teacherId &&
+          entry.teacherId &&
+          String(entry.teacherId) === String(teacherId)
+        ) {
+          conflicts.push({
+            type: "TEACHER",
+            message: `Teacher is already booked for ${label} at this time.`,
+          });
+        }
+      }
+    }
+
+    if (conflicts.length) {
+      return res.status(409).json({
+        success: false,
+        message: conflicts[0].message,
+        conflicts,
+      });
+    }
+
+    const tt = await getOrCreateTimetable(
+      schoolId,
+      academicYearId,
+      classId,
+      updatedBy
+    );
+
+    const next = {
+      day,
+      startTime: minutesToHHMM(start),
+      endTime: minutesToHHMM(end),
+      periodName: String(periodName || "").trim(),
+      subjectId: subjectId || null,
+      teacherId: teacherId || null,
+      roomId: roomId || null,
+      isPractical: false,
+      timeSlotId: null,
+    };
+
+    if (entryId) {
+      const source = await Timetable.findOne({
+        schoolId,
+        academicYearId,
+        "entries._id": entryId,
+      });
+      if (!source) {
+        return res.status(404).json({
+          success: false,
+          message: "Period not found.",
+        });
+      }
+
+      if (String(source._id) !== String(tt._id)) {
+        source.entries = source.entries.filter(
+          (entry) => String(entry._id) !== String(entryId)
+        );
+        if (source.status === "PUBLISHED") {
+          source.status = "DRAFT";
+          source.publishedAt = null;
+        }
+        source.updatedBy = updatedBy || null;
+        await source.save();
+        tt.entries.push(next);
+      } else {
+        const index = tt.entries.findIndex(
+          (entry) => String(entry._id) === String(entryId)
+        );
+        if (index < 0) {
+          return res.status(404).json({
+            success: false,
+            message: "Period not found.",
+          });
+        }
+        const previous = tt.entries[index].toObject?.() || tt.entries[index];
+        tt.entries[index] = { ...previous, ...next, _id: previous._id };
+      }
+    } else {
+      tt.entries.push(next);
+    }
+
+    if (tt.status === "PUBLISHED") {
+      tt.status = "DRAFT";
+      tt.publishedAt = null;
+    }
+    tt.updatedBy = updatedBy || null;
+    await tt.save();
+
+    const populated = await populateTimetable(
+      Timetable.findOne({ schoolId, academicYearId, classId })
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: entryId ? "Period updated." : "Period created.",
+      data: populated,
+    });
+  } catch (error) {
+    return serverError(res, error, "saveScheduleBlock");
+  }
+};
+
+const deleteScheduleBlock = async (req, res) => {
+  try {
+    const { schoolId, academicYearId, classId, entryId, updatedBy } = req.body;
+    if (!requireSchoolId(schoolId, res)) return;
+    if (!academicYearId || !classId || !entryId) {
+      return res.status(400).json({
+        success: false,
+        message: "academicYearId, classId and entryId are required.",
+      });
+    }
+
+    const tt = await Timetable.findOne({ schoolId, academicYearId, classId });
+    if (!tt) {
+      return res.status(404).json({
+        success: false,
+        message: "Timetable not found.",
+      });
+    }
+
+    const before = tt.entries.length;
+    tt.entries = tt.entries.filter((entry) => String(entry._id) !== String(entryId));
+    if (tt.entries.length === before) {
+      return res.status(404).json({
+        success: false,
+        message: "Period not found.",
+      });
+    }
+
+    if (tt.status === "PUBLISHED") {
+      tt.status = "DRAFT";
+      tt.publishedAt = null;
+    }
+    tt.updatedBy = updatedBy || null;
+    await tt.save();
+
+    const populated = await populateTimetable(Timetable.findById(tt._id));
+    return res.status(200).json({
+      success: true,
+      message: "Period deleted.",
+      data: populated,
+    });
+  } catch (error) {
+    return serverError(res, error, "deleteScheduleBlock");
+  }
+};
+
 const clearTimetableEntry = async (req, res) => {
   try {
     const { schoolId, academicYearId, classId, day, timeSlotId, updatedBy } =
@@ -2183,6 +2442,8 @@ module.exports = {
   deleteAllocation,
   getTimetableByClass,
   upsertTimetableEntry,
+  saveScheduleBlock,
+  deleteScheduleBlock,
   clearTimetableEntry,
   checkConflicts,
   publishTimetable,
