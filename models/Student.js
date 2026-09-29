@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const baseUserFields = require("./baseUserSchema");
 
 const studentSchema = new mongoose.Schema(
-    { 
+    {
         ...baseUserFields,
         role: {
             type: String,
@@ -31,5 +31,17 @@ const studentSchema = new mongoose.Schema(
 studentSchema.index({ schoolId: 1, status: 1 });
 studentSchema.index({ schoolId: 1, grade: 1, status: 1 });
 studentSchema.index({ schoolId: 1, admissionNumber: 1 });
+
+function omitEmptyProfileImage(_doc, ret) {
+    if (!ret.profileImage) delete ret.profileImage;
+    return ret;
+}
+
+studentSchema.set("toObject", {
+    transform: omitEmptyProfileImage,
+});
+studentSchema.set("toJSON", {
+    transform: omitEmptyProfileImage,
+});
 
 module.exports = mongoose.model("Student", studentSchema);

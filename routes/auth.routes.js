@@ -5,6 +5,7 @@ const {
     register,
     registerExamCandidate,
     pendingRequests,
+    getStudentsByIds,
     acceptOrRejectRequest,
     verifyForgotOtp,
     forgotPassword,
@@ -20,6 +21,7 @@ router.post("/register", register);
 router.post("/registerExamCandidate", registerExamCandidate);
 router.post("/login", login);
 router.post("/pendingRequests", pendingRequests);
+router.post("/getStudentsByIds", getStudentsByIds);
 router.post("/acceptOrRejectRequest", acceptOrRejectRequest);
 router.post("/createStudentTeacherParentSchoolAdmin", createStudentTeacherParentSchoolAdmin);
 router.post("/setNewPassword", setNewPassword);

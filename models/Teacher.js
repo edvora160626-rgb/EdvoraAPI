@@ -30,6 +30,11 @@ const teacherSchema = new mongoose.Schema(
             type: String,
         },
 
+        designation: {
+            type: String,
+            trim: true,
+        },
+
         experience: {
             type: Number,
         },

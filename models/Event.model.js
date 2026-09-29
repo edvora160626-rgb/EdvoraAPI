@@ -54,6 +54,29 @@ const eventSchema = new mongoose.Schema(
       required: true,
     },
 
+    appliesToAllClasses: {
+      type: Boolean,
+      default: true,
+    },
+
+    applicableClasses: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Class",
+      },
+    ],
+
+    registrationLimitEnabled: {
+      type: Boolean,
+      default: false,
+    },
+
+    maxProgramsPerStudent: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
+
     status: {
       type: String,
       enum: ["DRAFT", "PUBLISHED", "CANCELLED"],

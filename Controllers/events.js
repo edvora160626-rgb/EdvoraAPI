@@ -14,6 +14,101 @@ const parseDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const calendarDay = (value) => {
+  const text = String(value ?? "");
+  const matched = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (matched) return matched[1];
+  const date = value instanceof Date ? value : parseDate(value);
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const todayCalendarDay = () => calendarDay(new Date());
+
+function normalizeClassSelection(classIdsInput, appliesToAllClasses) {
+  const classIds = Array.isArray(classIdsInput)
+    ? [...new Set(classIdsInput.filter(isValidId).map(String))]
+    : [];
+  const appliesToAll =
+    appliesToAllClasses === true || appliesToAllClasses === "true";
+
+  return {
+    appliesToAllClasses: appliesToAll,
+    applicableClasses: appliesToAll ? [] : classIds,
+  };
+}
+
+function eventOpenToClass(event, classId) {
+  if (event?.appliesToAllClasses === true) return true;
+  const allowed = event?.applicableClasses || [];
+  if (event?.appliesToAllClasses !== false && allowed.length === 0) return true;
+  if (!classId) return false;
+  return allowed.some((item) => String(item?._id || item) === String(classId));
+}
+
+function eventOpenToAnyClass(event, classIds = []) {
+  if (event?.appliesToAllClasses === true) return true;
+  const allowed = event?.applicableClasses || [];
+  if (event?.appliesToAllClasses !== false && allowed.length === 0) return true;
+  return classIds.some((classId) => eventOpenToClass(event, classId));
+}
+
+async function viewerClassIds({ role, studentId, parentId }) {
+  const viewerRole = String(role || "").toUpperCase();
+
+  if (viewerRole === "STUDENT" && isValidId(studentId)) {
+    const student = await Student.findById(studentId).select("grade").lean();
+    return student?.grade ? [String(student.grade)] : [];
+  }
+
+  if (viewerRole === "PARENT" && isValidId(parentId)) {
+    const parent = await Parent.findById(parentId).select("children").lean();
+    const childIds = parent?.children || [];
+    if (!childIds.length) return [];
+    const students = await Student.find({ _id: { $in: childIds } })
+      .select("grade")
+      .lean();
+    return [
+      ...new Set(
+        students.map((student) => student.grade).filter(Boolean).map(String)
+      ),
+    ];
+  }
+
+  return null;
+}
+
+function parseRegistrationLimit(enabledInput, maxInput) {
+  const enabled =
+    enabledInput === true ||
+    enabledInput === "true" ||
+    enabledInput === "ENABLE";
+
+  if (!enabled) {
+    return { registrationLimitEnabled: false, maxProgramsPerStudent: null };
+  }
+
+  const maximum = Number(maxInput);
+  if (!Number.isInteger(maximum) || maximum < 1) {
+    return {
+      error:
+        "Maximum programs must be a whole number of at least 1 when the registration limit is enabled.",
+    };
+  }
+
+  return {
+    registrationLimitEnabled: true,
+    maxProgramsPerStudent: maximum,
+  };
+}
+
+function registrationLimitMessage(maximum) {
+  return `You can register for a maximum of ${maximum} programs. Please cancel one of your existing registrations before registering for another program.`;
+}
+
 const createEvent = async (req, res) => {
   try {
     const {
@@ -26,6 +121,10 @@ const createEvent = async (req, res) => {
       venue,
       registrationStartDate,
       registrationEndDate,
+      applicableClasses,
+      appliesToAllClasses,
+      registrationLimitEnabled,
+      maxProgramsPerStudent,
       status,
       createdBy,
     } = req.body;
@@ -70,6 +169,38 @@ const createEvent = async (req, res) => {
       });
     }
 
+    if (calendarDay(registrationStartDate) < todayCalendarDay()) {
+      return res.status(400).json({
+        success: false,
+        message: "Registration start date cannot be before the creation date.",
+      });
+    }
+
+    const classSelection = normalizeClassSelection(
+      applicableClasses,
+      appliesToAllClasses
+    );
+    if (
+      !classSelection.appliesToAllClasses &&
+      classSelection.applicableClasses.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Select at least one class, or choose Select All.",
+      });
+    }
+
+    const limit = parseRegistrationLimit(
+      registrationLimitEnabled,
+      maxProgramsPerStudent
+    );
+    if (limit.error) {
+      return res.status(400).json({
+        success: false,
+        message: limit.error,
+      });
+    }
+
     const eventStatus = status || "DRAFT";
     if (!["DRAFT", "PUBLISHED", "CANCELLED"].includes(eventStatus)) {
       return res.status(400).json({
@@ -88,6 +219,10 @@ const createEvent = async (req, res) => {
       venue: venue?.trim() || "",
       registrationStartDate: parsedRegStart,
       registrationEndDate: parsedRegEnd,
+      appliesToAllClasses: classSelection.appliesToAllClasses,
+      applicableClasses: classSelection.applicableClasses,
+      registrationLimitEnabled: limit.registrationLimitEnabled,
+      maxProgramsPerStudent: limit.maxProgramsPerStudent,
       status: eventStatus,
       createdBy,
     });
@@ -120,6 +255,10 @@ const updateEvent = async (req, res) => {
       venue,
       registrationStartDate,
       registrationEndDate,
+      applicableClasses,
+      appliesToAllClasses,
+      registrationLimitEnabled,
+      maxProgramsPerStudent,
       updatedBy,
     } = req.body;
 
@@ -177,6 +316,12 @@ const updateEvent = async (req, res) => {
           message: "Invalid registrationStartDate.",
         });
       }
+      if (calendarDay(registrationStartDate) < calendarDay(event.createdAt)) {
+        return res.status(400).json({
+          success: false,
+          message: "Registration start date cannot be before the creation date.",
+        });
+      }
       event.registrationStartDate = parsed;
     }
 
@@ -189,6 +334,50 @@ const updateEvent = async (req, res) => {
         });
       }
       event.registrationEndDate = parsed;
+    }
+
+    if (applicableClasses !== undefined || appliesToAllClasses !== undefined) {
+      const classSelection = normalizeClassSelection(
+        applicableClasses !== undefined
+          ? applicableClasses
+          : event.applicableClasses,
+        appliesToAllClasses !== undefined
+          ? appliesToAllClasses
+          : event.appliesToAllClasses
+      );
+      if (
+        !classSelection.appliesToAllClasses &&
+        classSelection.applicableClasses.length === 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Select at least one class, or choose Select All.",
+        });
+      }
+      event.appliesToAllClasses = classSelection.appliesToAllClasses;
+      event.applicableClasses = classSelection.applicableClasses;
+    }
+
+    if (
+      registrationLimitEnabled !== undefined ||
+      maxProgramsPerStudent !== undefined
+    ) {
+      const limit = parseRegistrationLimit(
+        registrationLimitEnabled !== undefined
+          ? registrationLimitEnabled
+          : event.registrationLimitEnabled,
+        maxProgramsPerStudent !== undefined
+          ? maxProgramsPerStudent
+          : event.maxProgramsPerStudent
+      );
+      if (limit.error) {
+        return res.status(400).json({
+          success: false,
+          message: limit.error,
+        });
+      }
+      event.registrationLimitEnabled = limit.registrationLimitEnabled;
+      event.maxProgramsPerStudent = limit.maxProgramsPerStudent;
     }
 
     if (event.registrationEndDate < event.registrationStartDate) {
@@ -391,8 +580,9 @@ const getEventsBySchool = async (req, res) => {
     const [events, countsAgg] = await Promise.all([
       Event.find(filter)
         .select(
-          "eventName description bannerUrl eventDate eventTime venue status registrationStartDate registrationEndDate createdAt"
+          "eventName description bannerUrl eventDate eventTime venue status registrationStartDate registrationEndDate createdAt appliesToAllClasses applicableClasses"
         )
+        .populate("applicableClasses", "className section")
         .sort({ eventDate: 1, createdAt: -1 })
         .lean(),
       Event.aggregate([
@@ -407,7 +597,22 @@ const getEventsBySchool = async (req, res) => {
       counts.ALL += row.count;
     });
 
-    const eventIds = events.map((e) => e._id);
+    let visibleEvents = events;
+    const viewerClassList = ["STUDENT", "PARENT"].includes(viewerRole)
+      ? await viewerClassIds({ role: viewerRole, studentId, parentId })
+      : null;
+
+    if (viewerClassList) {
+      visibleEvents = events.filter((event) =>
+        eventOpenToAnyClass(event, viewerClassList)
+      );
+      counts.PUBLISHED = visibleEvents.filter(
+        (event) => event.status === "PUBLISHED"
+      ).length;
+      counts.ALL = visibleEvents.length;
+    }
+
+    const eventIds = visibleEvents.map((e) => e._id);
     const [programCounts, registrationCounts] = await Promise.all([
       EventProgram.aggregate([
         {
@@ -462,7 +667,7 @@ const getEventsBySchool = async (req, res) => {
       }, {});
     }
 
-    const data = events.map((event) => ({
+    const data = visibleEvents.map((event) => ({
       ...event,
       programCount: programMap[String(event._id)] || 0,
       registrationCount: regMap[String(event._id)] || 0,
@@ -496,7 +701,9 @@ const getEventById = async (req, res) => {
       });
     }
 
-    const event = await Event.findOne({ _id: eventId, schoolId }).lean();
+    const event = await Event.findOne({ _id: eventId, schoolId })
+      .populate("applicableClasses", "className section")
+      .lean();
     if (!event) {
       return res.status(404).json({
         success: false,
@@ -513,6 +720,20 @@ const getEventById = async (req, res) => {
         success: false,
         message: "This event is not available.",
       });
+    }
+
+    if (["STUDENT", "PARENT"].includes(viewerRole)) {
+      const classIds = await viewerClassIds({
+        role: viewerRole,
+        studentId,
+        parentId,
+      });
+      if (!eventOpenToAnyClass(event, classIds || [])) {
+        return res.status(403).json({
+          success: false,
+          message: "This event is not available for your class.",
+        });
+      }
     }
 
     const programs = await EventProgram.find({ schoolId, eventId })
@@ -561,7 +782,18 @@ const getEventById = async (req, res) => {
       myProgramIds = new Set(myRegs.map((r) => String(r.programId)));
     }
 
+    const registeredCountForStudent = myProgramIds.size;
+    const limitEnabled = Boolean(event.registrationLimitEnabled);
+    const programMaximum = Number(event.maxProgramsPerStudent) || 0;
+    const limitReached =
+      limitEnabled &&
+      programMaximum > 0 &&
+      registeredCountForStudent >= programMaximum;
+    const limitMessage = limitReached
+      ? registrationLimitMessage(programMaximum)
+      : "";
     const now = new Date();
+
     const programsWithMeta = programs.map((program) => {
       const registeredCount = regMap[String(program._id)] || 0;
       const isRegistered = myProgramIds.has(String(program._id));
@@ -572,8 +804,9 @@ const getEventById = async (req, res) => {
         program.maxParticipants != null &&
         registeredCount >= program.maxParticipants;
 
-      let eligible = true;
+      let eligible = eventOpenToClass(event, student?.grade);
       if (
+        eligible &&
         student?.grade &&
         Array.isArray(program.eligibleClasses) &&
         program.eligibleClasses.length > 0
@@ -582,33 +815,85 @@ const getEventById = async (req, res) => {
           (c) => String(c._id || c) === String(student.grade)
         );
       }
+      if (!student && viewerRole !== "STUDENT") eligible = true;
+
+      const programDay = calendarDay(program.programDate);
+      const today = todayCalendarDay();
+      const completed = Boolean(programDay) && programDay < today;
+      let registrationPhase = "AVAILABLE";
+      if (completed) registrationPhase = "COMPLETED";
+      else if (isRegistered) registrationPhase = "REGISTERED";
+      else if (
+        !eligible ||
+        event.status !== "PUBLISHED" ||
+        program.registrationStatus !== "OPEN" ||
+        deadlinePassed ||
+        eventRegClosed ||
+        atCapacity ||
+        (limitReached && !isRegistered)
+      ) {
+        registrationPhase = "CLOSED";
+      }
+
+      const seatsAvailable =
+        program.maxParticipants == null
+          ? null
+          : Math.max(0, program.maxParticipants - registeredCount);
+
+      const phaseLabel = {
+        AVAILABLE: "Available",
+        REGISTERED: "Registered",
+        CLOSED: atCapacity
+          ? "Program Full"
+          : limitReached && !isRegistered
+            ? "Registration limit reached"
+            : "Registration Closed",
+        COMPLETED: "Program Completed",
+      }[registrationPhase];
 
       return {
         ...program,
         registeredCount,
         isRegistered,
+        eligible,
+        registrationPhase,
+        statusLabel: phaseLabel,
+        seatsAvailable,
+        atCapacity,
         canRegister:
           viewerRole === "STUDENT" &&
+          eligible &&
+          !isRegistered &&
+          !completed &&
           event.status === "PUBLISHED" &&
           program.registrationStatus === "OPEN" &&
           !deadlinePassed &&
           !eventRegClosed &&
           !atCapacity &&
-          eligible &&
-          !isRegistered,
+          !limitReached,
         canCancel:
           viewerRole === "STUDENT" &&
           isRegistered &&
-          program.registrationStatus === "OPEN" &&
-          !deadlinePassed,
+          !completed,
+        limitReached: Boolean(limitReached && !isRegistered),
+        limitMessage,
       };
     });
+
+    const visiblePrograms =
+      viewerRole === "STUDENT"
+        ? programsWithMeta.filter((program) => program.eligible)
+        : programsWithMeta;
 
     return res.status(200).json({
       success: true,
       data: {
-        event,
-        programs: programsWithMeta,
+        event: {
+          ...event,
+          studentRegistrationCount: registeredCountForStudent,
+          registrationLimitMessage: limitMessage,
+        },
+        programs: visiblePrograms,
         student,
       },
     });
@@ -848,26 +1133,6 @@ const deleteProgram = async (req, res) => {
       });
     }
 
-    const event = await Event.findOne({
-      _id: program.eventId,
-      schoolId,
-    }).select("status");
-
-    if (event?.status === "PUBLISHED") {
-      const regCount = await ProgramRegistration.countDocuments({
-        schoolId,
-        programId,
-        status: "REGISTERED",
-      });
-      if (regCount > 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Cannot delete a program that already has student registrations.",
-        });
-      }
-    }
-
     await ProgramRegistration.deleteMany({ schoolId, programId });
     await EventProgram.deleteOne({ _id: programId, schoolId });
 
@@ -920,7 +1185,7 @@ const registerForProgram = async (req, res) => {
       _id: program.eventId,
       schoolId,
     }).select(
-      "status registrationStartDate registrationEndDate eventName"
+      "status registrationStartDate registrationEndDate eventName appliesToAllClasses applicableClasses registrationLimitEnabled maxProgramsPerStudent"
     );
 
     if (!event || event.status !== "PUBLISHED") {
@@ -938,6 +1203,13 @@ const registerForProgram = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Event registration window is closed.",
+      });
+    }
+
+    if (!eventOpenToClass(event, student.grade)) {
+      return res.status(403).json({
+        success: false,
+        message: "This event is not available for your class.",
       });
     }
 
@@ -982,6 +1254,21 @@ const registerForProgram = async (req, res) => {
       });
     }
 
+    if (event.registrationLimitEnabled && event.maxProgramsPerStudent) {
+      const currentCount = await ProgramRegistration.countDocuments({
+        schoolId,
+        eventId: event._id,
+        studentId,
+        status: "REGISTERED",
+      });
+      if (currentCount >= event.maxProgramsPerStudent) {
+        return res.status(400).json({
+          success: false,
+          message: registrationLimitMessage(event.maxProgramsPerStudent),
+        });
+      }
+    }
+
     if (program.maxParticipants != null) {
       const count = await ProgramRegistration.countDocuments({
         schoolId,
@@ -1001,6 +1288,7 @@ const registerForProgram = async (req, res) => {
       existing.status = "REGISTERED";
       existing.registeredAt = now;
       existing.cancelledAt = null;
+      existing.classId = student.grade || existing.classId || null;
       registration = await existing.save();
     } else {
       registration = await ProgramRegistration.create({
@@ -1008,6 +1296,7 @@ const registerForProgram = async (req, res) => {
         eventId: program.eventId,
         programId,
         studentId,
+        classId: student.grade || null,
         registeredAt: now,
         status: "REGISTERED",
       });
@@ -1103,6 +1392,10 @@ const getParticipants = async (req, res) => {
       classId,
       section,
       search,
+      status,
+      fromDate,
+      toDate,
+      teacherId,
       parentId,
       role,
     } = req.body;
@@ -1117,8 +1410,21 @@ const getParticipants = async (req, res) => {
     const viewerRole = String(role || "").toUpperCase();
     const filter = {
       schoolId: new mongoose.Types.ObjectId(schoolId),
-      status: "REGISTERED",
     };
+
+    if (status === "ALL") {
+      // include every stored registration status
+    } else if (status && ["REGISTERED", "CANCELLED"].includes(status)) {
+      filter.status = status;
+    } else {
+      filter.status = "REGISTERED";
+    }
+
+    if (fromDate || toDate) {
+      filter.registeredAt = {};
+      if (fromDate) filter.registeredAt.$gte = new Date(`${calendarDay(fromDate)}T00:00:00`);
+      if (toDate) filter.registeredAt.$lte = new Date(`${calendarDay(toDate)}T23:59:59.999`);
+    }
 
     if (eventId && isValidId(eventId)) {
       filter.eventId = new mongoose.Types.ObjectId(eventId);
@@ -1145,6 +1451,44 @@ const getParticipants = async (req, res) => {
         });
       }
       filter.studentId = { $in: children };
+    }
+
+    let teacherClassIds = null;
+    if (viewerRole === "TEACHER") {
+      if (!teacherId || !isValidId(teacherId)) {
+        return res.status(400).json({
+          success: false,
+          message: "teacherId is required for teacher access.",
+        });
+      }
+      const assigned = await Class.find({
+        schoolId,
+        classTeacherId: teacherId,
+        status: "ACTIVE",
+      })
+        .select("_id")
+        .lean();
+      teacherClassIds = assigned.map((item) => item._id);
+      if (!teacherClassIds.length) {
+        return res.status(200).json({
+          success: true,
+          total: 0,
+          totalsByProgram: [],
+          data: [],
+        });
+      }
+      if (
+        classId &&
+        isValidId(classId) &&
+        !teacherClassIds.some((id) => String(id) === String(classId))
+      ) {
+        return res.status(200).json({
+          success: true,
+          total: 0,
+          totalsByProgram: [],
+          data: [],
+        });
+      }
     }
 
     const pipeline = [
@@ -1189,6 +1533,8 @@ const getParticipants = async (req, res) => {
     const matchExtra = {};
     if (classId && isValidId(classId)) {
       matchExtra["student.grade"] = new mongoose.Types.ObjectId(classId);
+    } else if (teacherClassIds) {
+      matchExtra["student.grade"] = { $in: teacherClassIds };
     }
     if (section) {
       matchExtra["student.section"] = String(section).trim().toUpperCase();
@@ -1246,10 +1592,26 @@ const getParticipants = async (req, res) => {
     );
 
     const data = await ProgramRegistration.aggregate(pipeline);
+    const totalsByProgram = Object.values(
+      data.reduce((acc, row) => {
+        const key = String(row.programId);
+        if (!acc[key]) {
+          acc[key] = {
+            programId: row.programId,
+            programName: row.programName,
+            eventName: row.eventName,
+            total: 0,
+          };
+        }
+        if (row.status === "REGISTERED") acc[key].total += 1;
+        return acc;
+      }, {})
+    );
 
     return res.status(200).json({
       success: true,
       total: data.length,
+      totalsByProgram,
       data,
     });
   } catch (error) {

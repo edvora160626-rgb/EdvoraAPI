@@ -1,10 +1,20 @@
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const School = require("../models/School");
 const Student = require("../models/Student");
 const Department = require("../models/Departments.model");
 const generateToken = require("../utils/generateJwt");
+const generateSetupToken = generateToken.generateSetupToken;
+const { persistProfileImage } = require("../utils/profileImage");
+const { passwordPolicyMessage } = require("../utils/passwordPolicy");
+const {
+    loginLockStatus,
+    recordLoginFailure,
+    clearLoginFailures,
+} = require("../utils/loginAttempts");
+const { sendStaffWelcomeEmail } = require("../utils/mailer");
 const {
     getModelByRole,
     findUserAcrossModels,
@@ -33,6 +43,60 @@ const { isDbUnavailableError } = require("../middleware/requireDb");
 
 const normalizePhoneCode = (value) =>
     String(value ?? "").replace(/\D/g, "") || "91";
+
+function createTemporaryCode() {
+    return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+async function temporaryCodeMatches(stored, input) {
+    const saved = String(stored || "");
+    const value = String(input || "");
+    if (!saved || !value) return false;
+    if (saved.startsWith("$2")) return bcrypt.compare(value, saved);
+    return saved === value;
+}
+
+const normalizeGender = (value) => {
+    const text = String(value || "").trim().toLowerCase();
+    if (text === "male") return "Male";
+    if (text === "female") return "Female";
+    if (text === "other") return "Other";
+    return "";
+};
+
+const parseCalendarDate = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return null;
+
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const dayFirst = text.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+    let year;
+    let month;
+    let day;
+
+    if (iso) {
+        year = Number(iso[1]);
+        month = Number(iso[2]);
+        day = Number(iso[3]);
+    } else if (dayFirst) {
+        day = Number(dayFirst[1]);
+        month = Number(dayFirst[2]);
+        year = Number(dayFirst[3]);
+    } else {
+        const parsed = new Date(text);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+        date.getUTCFullYear() !== year ||
+        date.getUTCMonth() !== month - 1 ||
+        date.getUTCDate() !== day
+    ) {
+        return null;
+    }
+    return date;
+};
 
 const toDepartmentId = (value) => {
     if (!value) return "";
@@ -144,9 +208,14 @@ const resolveParentChildren = async (childrenInput, schoolId) => {
         }
 
         if (!student) {
+            const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const pattern = new RegExp(`^${escaped}$`, "i");
             student = await Student.findOne({
-                admissionNumber: value,
                 schoolId,
+                $or: [
+                    { admissionNumber: pattern },
+                    { rollNumber: pattern },
+                ],
             }).lean();
         }
 
@@ -166,6 +235,40 @@ const resolveParentChildren = async (childrenInput, schoolId) => {
     return { children: resolvedIds };
 };
 
+async function hydrateParentChildren(parents = []) {
+    const ids = new Set();
+
+    for (const parent of parents) {
+        for (const child of parent.children || []) {
+            const id = child && typeof child === "object" ? child._id : child;
+            if (id && mongoose.Types.ObjectId.isValid(id)) ids.add(String(id));
+        }
+    }
+
+    if (!ids.size) return parents;
+
+    const students = await Student.find({
+        _id: { $in: Array.from(ids) },
+    })
+        .select(
+            "firstName lastName admissionNumber rollNumber section grade profileImage"
+        )
+        .populate("grade", "className section")
+        .lean();
+
+    const byId = new Map(students.map((student) => [String(student._id), student]));
+
+    return parents.map((parent) => ({
+        ...parent,
+        children: (parent.children || [])
+            .map((child) => {
+                const id = child && typeof child === "object" ? child._id : child;
+                return byId.get(String(id)) || null;
+            })
+            .filter(Boolean),
+    }));
+}
+
 const register = async (req, res) => {
     try {
         const {
@@ -177,6 +280,10 @@ const register = async (req, res) => {
             phonecode,
             phone,
             password,
+            address,
+            profileImage,
+            gender,
+            dob,
 
             // Student
             admissionNumber,
@@ -320,8 +427,36 @@ const register = async (req, res) => {
             email,
             phone,
             phoneCode: normalizedPhoneCode,
-            password: hashedPassword
+            password: hashedPassword,
         };
+
+        const trimmedAddress = String(address || "").trim();
+        if (trimmedAddress) {
+            userData.address = trimmedAddress;
+        }
+
+        const nextGender = normalizeGender(gender);
+        if (nextGender) {
+            userData.gender = nextGender;
+        }
+
+        const parsedDob = parseCalendarDate(dob);
+        if (parsedDob) {
+            userData.dob = parsedDob;
+        }
+
+        if (typeof profileImage === "string" && profileImage.startsWith("data:image/")) {
+            const savedImage = persistProfileImage(profileImage);
+            if (savedImage?.error) {
+                return res.status(400).json({
+                    success: false,
+                    message: savedImage.error,
+                });
+            }
+            if (savedImage?.url) {
+                userData.profileImage = savedImage.url;
+            }
+        }
 
         if (role === "STUDENT") {
             Object.assign(userData, {
@@ -521,10 +656,20 @@ const login = async (req, res) => {
         }
 
         const email = emailid.trim().toLowerCase();
+        const lock = loginLockStatus(email);
+        if (lock.locked) {
+            return res.status(429).json({
+                success: false,
+                message: "Too many login attempts. Try again in 15 minutes.",
+            });
+        }
 
         // Strict portal isolation: school users ≠ exam candidates.
         // School lookup hits 6 collections in parallel and returns on first hit.
-        const lookupOptions = { lean: true, projection: LOGIN_USER_FIELDS };
+        const lookupOptions = {
+            lean: true,
+            projection: `${LOGIN_USER_FIELDS} welcomeOTP`,
+        };
         const result =
             portal === "examination"
                 ? await findExamCandidate({ email }, lookupOptions)
@@ -565,28 +710,42 @@ const login = async (req, res) => {
         }
 
         if (user.mustChangePassword && user.mustChangePassword === 1) {
-            const isWelcomePasswordValid = password;
-            if (!isWelcomePasswordValid) {
-                return res.status(401).json({
+            const codeMatches = await temporaryCodeMatches(user.welcomeOTP, password);
+            if (!codeMatches) {
+                const failure = recordLoginFailure(email);
+                return res.status(failure.locked ? 429 : 401).json({
                     success: false,
-                    message: "Invalid welcome OTP",
+                    message: failure.locked
+                        ? "Too many login attempts. Try again in 15 minutes."
+                        : "Invalid email or temporary login code",
                 });
             }
+
+            clearLoginFailures(email);
             return res.status(200).json({
                 success: true,
-                message: "Verified successful",
+                message: "Temporary code verified. Create your password.",
+                requiresPasswordSetup: true,
                 isFirstLogin: "Y",
+                setupToken: generateSetupToken(user),
+                email: user.email,
+                role: user.role,
             });
         }
 
-        const isPasswordValid = await bcrypt.compare(password, user.password);
+        const isPasswordValid = await bcrypt.compare(password, user.password || "");
 
         if (!isPasswordValid) {
-            return res.status(401).json({
+            const failure = recordLoginFailure(email);
+            return res.status(failure.locked ? 429 : 401).json({
                 success: false,
-                message: "Invalid email or password",
+                message: failure.locked
+                    ? "Too many login attempts. Try again in 15 minutes."
+                    : "Invalid email or password",
             });
         }
+
+        clearLoginFailures(email);
 
         const token = generateToken(user);
 
@@ -809,12 +968,27 @@ const pendingRequests = async (req, res) => {
             });
         }
 
+        if (String(role).toUpperCase() === "PARENT") {
+            query = query.populate({
+                path: "children",
+                select: "firstName lastName admissionNumber rollNumber section grade",
+                populate: {
+                    path: "grade",
+                    select: "className section",
+                },
+            });
+        }
+
         const pendingList = await query.lean();
+        const parentsWithChildren =
+            String(role).toUpperCase() === "PARENT"
+                ? await hydrateParentChildren(pendingList)
+                : pendingList;
 
         const data =
             String(role).toUpperCase() === "TEACHER"
-                ? await resolveTeacherDepartmentLabels(pendingList)
-                : pendingList;
+                ? await resolveTeacherDepartmentLabels(parentsWithChildren)
+                : parentsWithChildren;
 
         return res.status(200).json({
             success: true,
@@ -932,6 +1106,9 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             phonecode,
             phone,
             gender,
+            dob,
+            address,
+            profileImage,
 
             // Student
             admissionNumber,
@@ -943,6 +1120,7 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             employeeId,
             department,
             qualification,
+            designation,
             subjects,
 
             // Parent
@@ -977,10 +1155,10 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 break;
 
             case "TEACHER":
-                if (!department || !qualification) {
+                if (!department || !(designation || qualification)) {
                     return res.status(400).json({
                         success: false,
-                        message: "Department and Qualification are required."
+                        message: "Department and designation are required."
                     });
                 }
                 break;
@@ -1032,7 +1210,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             });
         }
 
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const temporaryCode = createTemporaryCode();
+        const temporaryCodeHash = await bcrypt.hash(temporaryCode, 10);
 
         const userData = {
             schoolId,
@@ -1044,11 +1223,34 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             phoneCode: normalizedPhoneCode,
             password: null,
             isVerified: false,
-            welcomeOTP: otp,
+            welcomeOTP: temporaryCodeHash,
             mustChangePassword: 1,
             status: "ACTIVE",
-            gender
+            gender: normalizeGender(gender),
         };
+
+        const trimmedAddress = String(address || "").trim();
+        if (trimmedAddress) {
+            userData.address = trimmedAddress;
+        }
+
+        if (typeof profileImage === "string" && profileImage.startsWith("data:image/")) {
+            const savedImage = persistProfileImage(profileImage);
+            if (savedImage?.error) {
+                return res.status(400).json({
+                    success: false,
+                    message: savedImage.error,
+                });
+            }
+            if (savedImage?.url) {
+                userData.profileImage = savedImage.url;
+            }
+        }
+
+        const parsedDob = parseCalendarDate(dob);
+        if (parsedDob) {
+            userData.dob = parsedDob;
+        }
 
         if (role === "STUDENT") {
             userData.admissionNumber = admissionNumber;
@@ -1069,6 +1271,17 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
                 return res.status(400).json({
                     success: false,
                     message: "At least one valid Department is required.",
+                });
+            }
+
+            const existingDepartments = await Department.find({
+                _id: { $in: departmentIds },
+                schoolId,
+            }).select("_id");
+            if (existingDepartments.length !== departmentIds.length) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Select a department that belongs to this school.",
                 });
             }
 
@@ -1096,7 +1309,8 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             userData.department = departmentIds.map(
                 (id) => new mongoose.Types.ObjectId(id)
             );
-            userData.qualification = qualification;
+            userData.designation = String(designation || qualification || "").trim();
+            userData.qualification = userData.designation;
             userData.subjects = normalizedSubjects;
             userData.status = "ACTIVE";
         }
@@ -1126,11 +1340,30 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
             );
         }
 
-        // await sendOTPEmail(user.email, user.firstName, otp);
+        const mailed = await sendStaffWelcomeEmail({
+            to: user.email,
+            name: [user.firstName, user.lastName].filter(Boolean).join(" "),
+            temporaryCode,
+        });
+
+        if (!mailed.sent) {
+            await Model.deleteOne({ _id: user._id });
+            if (role === "TEACHER" && Array.isArray(userData.department)) {
+                await Department.updateMany(
+                    { _id: { $in: userData.department } },
+                    { $pull: { teacherids: user._id } }
+                );
+            }
+            return res.status(503).json({
+                success: false,
+                message: mailed.message || "Welcome email could not be sent.",
+            });
+        }
 
         return res.status(201).json({
             success: true,
-            message: `${role} created successfully. OTP has been sent to the registered email.`,
+            message: `Staff added successfully. Welcome email sent to ${user.email}.`,
+            emailSent: true,
             data: {
                 id: user._id,
                 role: user.role,
@@ -1155,23 +1388,57 @@ const createStudentTeacherParentSchoolAdmin = async (req, res) => {
 
 const setNewPassword = async (req, res) => {
     try {
-        const { email, password, role } = req.body;
+        const { email, password, role, setupToken, newPassword, confirmPassword } = req.body;
+        const nextPassword = newPassword || password;
 
-        if (!email || !password || !role) {
+        let resolvedEmail = String(email || "").trim().toLowerCase();
+        let resolvedRole = role;
+        let fromSetup = false;
+
+        if (setupToken) {
+            let payload;
+            try {
+                payload = jwt.verify(setupToken, process.env.JWT_SECRET);
+            } catch {
+                return res.status(401).json({
+                    success: false,
+                    message: "Your setup session expired. Log in again with the temporary code.",
+                });
+            }
+            if (payload?.purpose !== "password_setup") {
+                return res.status(401).json({
+                    success: false,
+                    message: "Invalid password setup session.",
+                });
+            }
+            resolvedEmail = String(payload.email || "").toLowerCase();
+            resolvedRole = payload.role;
+            fromSetup = true;
+        }
+
+        if (!resolvedEmail || !nextPassword || !resolvedRole) {
             return res.status(400).json({
                 success: false,
                 message: "Email, role and password are required."
             });
         }
 
-        if (password.length < 8) {
+        if (fromSetup && confirmPassword !== nextPassword) {
             return res.status(400).json({
                 success: false,
-                message: "Password must be at least 8 characters long."
+                message: "Passwords do not match.",
             });
         }
 
-        const Model = getModelByRole(role);
+        const policyError = passwordPolicyMessage(nextPassword);
+        if (policyError) {
+            return res.status(400).json({
+                success: false,
+                message: policyError,
+            });
+        }
+
+        const Model = getModelByRole(resolvedRole);
 
         if (!Model) {
             return res.status(400).json({
@@ -1180,7 +1447,7 @@ const setNewPassword = async (req, res) => {
             });
         }
 
-        const user = await Model.findOne({ email });
+        const user = await Model.findOne({ email: resolvedEmail });
 
         if (!user) {
             return res.status(404).json({
@@ -1189,14 +1456,38 @@ const setNewPassword = async (req, res) => {
             });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        if (fromSetup && user.mustChangePassword !== 1) {
+            return res.status(400).json({
+                success: false,
+                message: "This account already has a password. Sign in with that password.",
+            });
+        }
 
-        user.password = hashedPassword;
+        user.password = await bcrypt.hash(nextPassword, 10);
+        user.welcomeOTP = null;
+        user.mustChangePassword = 0;
         await user.save();
+
+        if (!fromSetup) {
+            return res.status(200).json({
+                success: true,
+                message: "Password has been set successfully."
+            });
+        }
+
+        const token = generateToken(user);
+        res.cookie(`token_${user.role}_${user._id}`, token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
 
         return res.status(200).json({
             success: true,
-            message: "Password has been set successfully."
+            message: "Password created. Welcome to Edvora.",
+            token,
+            user: toPublicUser(user),
         });
 
     } catch (error) {
@@ -1486,8 +1777,8 @@ const updateProfile = async (req, res) => {
         }
 
         if (gender !== undefined) {
-            const nextGender = String(gender).trim();
-            if (nextGender && !["Male", "Female", "Other"].includes(nextGender)) {
+            const nextGender = normalizeGender(gender);
+            if (String(gender || "").trim() && !nextGender) {
                 return res.status(400).json({
                     success: false,
                     message: "Gender must be Male, Female, or Other.",
@@ -1500,8 +1791,8 @@ const updateProfile = async (req, res) => {
             if (!dob) {
                 user.dob = undefined;
             } else {
-                const parsed = new Date(dob);
-                if (Number.isNaN(parsed.getTime())) {
+                const parsed = parseCalendarDate(dob);
+                if (!parsed) {
                     return res.status(400).json({
                         success: false,
                         message: "Invalid date of birth.",
@@ -1549,6 +1840,46 @@ const updateProfile = async (req, res) => {
     }
 };
 
+const getStudentsByIds = async (req, res) => {
+    try {
+        const { schoolId, studentIds } = req.body;
+        const ids = (Array.isArray(studentIds) ? studentIds : [])
+            .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+        if (!schoolId || !mongoose.Types.ObjectId.isValid(schoolId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid schoolId is required.",
+            });
+        }
+
+        if (!ids.length) {
+            return res.status(200).json({ success: true, data: [] });
+        }
+
+        const students = await Student.find({
+            schoolId,
+            _id: { $in: ids },
+        })
+            .select(
+                "firstName lastName admissionNumber rollNumber section grade profileImage"
+            )
+            .populate("grade", "className section")
+            .lean();
+
+        return res.status(200).json({
+            success: true,
+            data: students,
+        });
+    } catch (error) {
+        console.error("getStudentsByIds Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+        });
+    }
+};
+
 module.exports = {
     getAllSchools,
     register,
@@ -1557,6 +1888,7 @@ module.exports = {
     registerSchool,
     acceptOrRejectRequest,
     pendingRequests,
+    getStudentsByIds,
     setNewPassword,
     createStudentTeacherParentSchoolAdmin,
     verifyForgotOtp,

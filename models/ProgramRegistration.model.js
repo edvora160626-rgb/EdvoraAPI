@@ -30,6 +30,13 @@ const programRegistrationSchema = new mongoose.Schema(
       index: true,
     },
 
+    classId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Class",
+      default: null,
+      index: true,
+    },
+
     registeredAt: {
       type: Date,
       default: Date.now,

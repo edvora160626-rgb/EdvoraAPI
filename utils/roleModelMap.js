@@ -30,7 +30,7 @@ const getModelByRole = (role) => {
 const isExamPortalRole = (role) => EXAM_USER_ROLES.includes(role);
 
 const LOGIN_USER_FIELDS =
-  "firstName lastName email role schoolId status password mustChangePassword phone phoneCode profileImage gender department employeeId staffId admissionNumber rollNumber grade section children relationship";
+  "firstName lastName email role schoolId status password mustChangePassword phone phoneCode profileImage gender dob address department employeeId staffId admissionNumber rollNumber grade section children relationship";
 
 function buildFindOne(Model, query, { lean = false, projection } = {}) {
   let q = Model.findOne(query);

@@ -22,12 +22,6 @@ const departmentSchema = new mongoose.Schema(
       uppercase: true,
     },
 
-    departmentHead: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Teacher",
-      default: null,
-    },
-
     description: {
       type: String,
       trim: true,
@@ -66,20 +60,9 @@ const departmentSchema = new mongoose.Schema(
       default: "",
     },
 
-    parentDepartment: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Department",
-      default: null,
-    },
-
     color: {
       type: String,
       default: "#4F46E5",
-    },
-
-    displayOrder: {
-      type: Number,
-      default: 0,
     },
 
     status: {
